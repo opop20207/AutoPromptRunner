@@ -139,6 +139,19 @@ export interface WorktreeCreate {
   base_branch?: string | null;
 }
 
+export type LockStatus = "ACTIVE" | "RELEASED" | "EXPIRED";
+
+export interface RunLock {
+  id: number;
+  workspace_path: string;
+  run_id: number;
+  status: LockStatus;
+  owner?: string | null;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string | null;
+}
+
 export interface Step {
   id: number;
   loop_index: number;

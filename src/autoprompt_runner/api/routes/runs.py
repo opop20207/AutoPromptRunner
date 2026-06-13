@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from ... import safety, storage
-from ...models import Approval, Artifact, StepExecutionReport, StoredRun, StoredStep
+from ... import locks, safety, storage
+from ...models import Approval, Artifact, RunLock, StepExecutionReport, StoredRun, StoredStep
 from ...services.run_service import RunInputError, RunService, RunServiceError, resolve_run_inputs
 from ..dependencies import get_db_path
 from ..schemas import (
@@ -26,7 +26,7 @@ router = APIRouter(tags=["runs"])
 _PREVIEW_LIMIT = 80
 
 # Maps RunServiceError.kind to an HTTP status for the approve/reject endpoints.
-_APPROVE_STATUS = {"not_found": 404, "terminal": 409, "no_pending": 400}
+_APPROVE_STATUS = {"not_found": 404, "terminal": 409, "no_pending": 400, "locked": 409}
 _REJECT_STATUS = {"not_found": 404, "no_pending": 400}
 
 
@@ -39,6 +39,24 @@ class RunLogsResponse(BaseModel):
     stderr: str = ""
     stdout_artifact_id: Optional[int] = None
     stderr_artifact_id: Optional[int] = None
+
+
+class LockResponse(BaseModel):
+    id: int
+    workspace_path: str
+    run_id: int
+    status: str
+    owner: Optional[str] = None
+    created_at: str
+    updated_at: str
+    expires_at: Optional[str] = None
+
+
+def _lock_response(lock: RunLock) -> LockResponse:
+    return LockResponse(
+        id=lock.id, workspace_path=lock.workspace_path, run_id=lock.run_id, status=lock.status,
+        owner=lock.owner, created_at=lock.created_at, updated_at=lock.updated_at, expires_at=lock.expires_at,
+    )
 
 
 def _short(text: Optional[str], limit: int = _PREVIEW_LIMIT) -> str:
@@ -139,7 +157,7 @@ def create_run(body: RunCreateRequest, db_path: str = Depends(get_db_path)) -> R
             timeout_seconds=settings.timeout_seconds,
         )
     except RunServiceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=409 if exc.kind == "locked" else 400, detail=str(exc))
     return _summary_from_report(db_path, report, body.show_next_prompt)
 
 
@@ -214,3 +232,15 @@ def run_logs(run_id: int, db_path: str = Depends(get_db_path)) -> RunLogsRespons
     if logs is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
     return RunLogsResponse(**logs)
+
+
+@router.get("/locks", response_model=List[LockResponse])
+def list_locks(db_path: str = Depends(get_db_path)) -> List[LockResponse]:
+    locks.expire_locks(db_path)  # reflect any TTL expiry before listing
+    return [_lock_response(lock) for lock in storage.list_locks(db_path)]
+
+
+@router.post("/locks/{run_id}/release")
+def release_lock(run_id: int, db_path: str = Depends(get_db_path)) -> Dict[str, object]:
+    released = locks.release_lock(db_path, run_id)
+    return {"run_id": run_id, "released": released}

@@ -14,7 +14,7 @@ if _SRC not in sys.path:
 try:
     from fastapi.testclient import TestClient
 
-    from autoprompt_runner import storage
+    from autoprompt_runner import locks, storage
     from autoprompt_runner.api.app import app
     from autoprompt_runner.api.dependencies import get_db_path
 
@@ -134,6 +134,36 @@ class RunApiTests(unittest.TestCase):
     def test_create_run_max_loops_above_hard_limit_returns_400(self):
         resp = self.client.post("/runs", json={"prompt": "p", "max_loops": 9999})
         self.assertEqual(resp.status_code, 400)
+
+    def test_locks_list_endpoint(self):
+        resp = self.client.get("/locks")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsInstance(resp.json(), list)
+
+    def test_create_run_locked_workspace_returns_409(self):
+        ws = os.path.join(self._tmp.name, "wsA")
+        os.makedirs(ws)
+        locks.acquire_lock(self.db, ws, run_id=999, timeout_seconds=60)  # held by another run
+        resp = self.client.post(
+            "/runs", json={"prompt": "p", "workspace": ws, "provider": "mock", "max_loops": 1, "require_approval": False}
+        )
+        self.assertEqual(resp.status_code, 409)
+
+    def test_release_lock_endpoint(self):
+        ws = os.path.join(self._tmp.name, "wsB")
+        os.makedirs(ws)
+        locks.acquire_lock(self.db, ws, run_id=77, timeout_seconds=60)
+        resp = self.client.post("/locks/77/release")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["released"], 1)
+        self.assertIsNone(locks.active_lock_for_workspace(self.db, ws))
+
+    def test_approve_next_locked_workspace_returns_409(self):
+        ws = os.path.join(self._tmp.name, "wsC")
+        os.makedirs(ws)
+        run_id = self._run(workspace=ws, max_loops=3, require_approval=True).json()["id"]  # pauses at approval
+        locks.acquire_lock(self.db, ws, run_id=999, timeout_seconds=60)  # another run grabs the workspace
+        self.assertEqual(self.client.post(f"/runs/{run_id}/approve-next").status_code, 409)
 
 
 if __name__ == "__main__":

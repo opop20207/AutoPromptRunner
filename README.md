@@ -286,6 +286,56 @@ In the **web UI**, *New Worktree* creates one (project, name, branch, base branc
 *Remove* (with a confirmation), and *New Run* has a worktree selector that shows the
 resolved workspace path.
 
+## Workspace execution locks
+
+AutoPromptRunner may drive Claude Code or Codex against real repositories. Two active
+runs in the **same workspace** can corrupt edits, mix diffs, and create invalid run
+history. To prevent this, a run takes a **workspace execution lock** before any runner
+executes: there is at most **one active lock per workspace** (paths are normalized first,
+so differently-written paths to the same directory share one lock).
+
+**Lifecycle.** The lock is held only during actual runner execution and is released as
+soon as the run reaches a terminal state (`DONE` / `FAILED` / `STOPPED`) **or** pauses at
+`WAITING_APPROVAL` -- so a run waiting for human approval never blocks the workspace.
+`approve-next` re-acquires the lock before running the next step; `reject-next` releases
+it. A run with no workspace (for example a `mock` run) needs no lock. A run that uses a
+project's `repo_path`, a worktree path, or an explicit `--workspace` is locked. If another
+active run already holds the workspace, the new run is refused with a clean error (CLI
+exits non-zero, API returns `409`) and a `lock_blocker` artifact is recorded.
+
+**Expiration.** Each lock has an `expires_at` of the run's `timeout_seconds + 300`. If a
+process dies before releasing its lock, the stale lock is reclaimed automatically the next
+time a lock is acquired or listed -- so a crash cannot block a workspace forever. The
+`locks release` command (and `POST /locks/{run_id}/release`) is a manual escape hatch.
+
+CLI:
+
+```
+python -m autoprompt_runner.cli locks list                 # id, run, status, expires_at, workspace
+python -m autoprompt_runner.cli locks release --run-id 12  # manually release a stale lock
+```
+
+A `run` whose workspace is locked by another active run prints a compact lock error and
+exits non-zero.
+
+API:
+
+```
+curl http://127.0.0.1:8000/locks
+curl -X POST http://127.0.0.1:8000/locks/12/release
+```
+
+`POST /runs` returns `409` when the target workspace is locked by another active run, and
+`POST /runs/{id}/approve-next` returns `409` if the workspace is locked when you try to
+continue. In the **web UI**, the run detail has a *Locks* panel (lock state, with a manual
+*Release* button behind a confirmation), and *New Run* surfaces a "workspace locked"
+warning when the backend returns `409`.
+
+> **Parallel runs:** do not point two runs at the same workspace at once -- the lock will
+> refuse the second. To run sessions in parallel, give each its own
+> [Git worktree](#parallel-sessions-with-git-worktrees) (a separate branch and directory)
+> rather than sharing one working tree.
+
 ## Git artifact capture
 
 When a run's workspace is a Git repository, each step records read-only Git artifacts:

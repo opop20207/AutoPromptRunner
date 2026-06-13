@@ -22,7 +22,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import __version__, storage  # noqa: E402
+from autoprompt_runner import __version__, locks, storage  # noqa: E402
 from autoprompt_runner.cli import main  # noqa: E402
 from autoprompt_runner.state import RunStatus  # noqa: E402
 
@@ -542,6 +542,48 @@ class WorktreeCliTests(unittest.TestCase):
         ])
         self.assertNotEqual(code, 0)
         self.assertIn("not found", err.lower())
+
+
+class LocksCliTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        self.ws = os.path.join(self._tmp.name, "ws")
+        os.makedirs(self.ws)
+        storage.init_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_locks_list_after_workspace_run(self):
+        run_cli([
+            "run", "--prompt", "p", "--provider", "mock", "--workspace", self.ws,
+            "--max-loops", "1", "--no-approval", "--db-path", self.db,
+        ])
+        code, out, err = run_cli(["locks", "list", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("RELEASED", out)  # the run acquired then released a lock
+
+    def test_locks_release(self):
+        from datetime import datetime, timedelta, timezone
+
+        storage.create_run_lock(
+            self.db, workspace_path=locks.normalize_workspace(self.ws), run_id=42,
+            expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        )
+        code, out, err = run_cli(["locks", "release", "--run-id", "42", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("Released", out)
+        self.assertEqual(storage.get_lock_for_run(self.db, 42).status, "RELEASED")
+
+    def test_run_blocked_by_active_lock(self):
+        locks.acquire_lock(self.db, self.ws, run_id=999, timeout_seconds=60)
+        code, out, err = run_cli([
+            "run", "--prompt", "p", "--provider", "mock", "--workspace", self.ws,
+            "--max-loops", "1", "--no-approval", "--db-path", self.db,
+        ])
+        self.assertNotEqual(code, 0)
+        self.assertIn("locked", err.lower())
 
 
 if __name__ == "__main__":

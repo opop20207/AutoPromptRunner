@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 
-import { api, errorMessage } from "../api/client";
+import { ApiError, api, errorMessage } from "../api/client";
 import {
   MAX_LOOPS_HARD_LIMIT,
   PROVIDERS,
@@ -124,7 +124,11 @@ export function RunForm({
       setPrompt("");
       onCreated(created.id);
     } catch (err) {
-      setError(errorMessage(err));
+      if (err instanceof ApiError && err.status === 409) {
+        setError(`Workspace locked — another active run holds it. ${err.message}`);
+      } else {
+        setError(errorMessage(err));
+      }
     } finally {
       setBusy(false);
     }

@@ -13,6 +13,7 @@ import type {
   RunDetail,
   RunLogs,
   RunSummary,
+  RunLock,
   Template,
   TemplateCreate,
   TemplateRender,
@@ -111,6 +112,9 @@ export const api = {
     request<unknown>(`/worktrees/${encodeURIComponent(name)}${force ? "?force=true" : ""}`, {
       method: "DELETE",
     }),
+  listLocks: () => request<RunLock[]>("/locks"),
+  releaseLock: (runId: number) =>
+    request<{ run_id: number; released: number }>(`/locks/${runId}/release`, { method: "POST" }),
 };
 
 export function errorMessage(err: unknown): string {

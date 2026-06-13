@@ -115,6 +115,27 @@ class Worktree:
 
 
 @dataclass
+class RunLock:
+    """A workspace execution lock, persisted in ``run_locks``.
+
+    Guards against two active runs executing in the same workspace at once (which would
+    corrupt edits and mix diffs). ``status`` is ``ACTIVE`` / ``RELEASED`` / ``EXPIRED``
+    (see ``autoprompt_runner.locks``). ``workspace_path`` is stored normalized so
+    differently-written paths to the same directory compare equal. ``expires_at`` lets a
+    lock be reclaimed if a process dies before releasing it.
+    """
+
+    id: int
+    workspace_path: str
+    run_id: int
+    status: str
+    owner: Optional[str]
+    created_at: str
+    updated_at: str
+    expires_at: Optional[str] = None
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

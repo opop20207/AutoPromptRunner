@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from .approvals import ApprovalStatus
-from .models import Approval, Artifact, Project, StoredRun, StoredStep, Template, Worktree
+from .models import Approval, Artifact, Project, RunLock, StoredRun, StoredStep, Template, Worktree
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
 # Default database location, relative to the current working directory.
@@ -22,6 +22,11 @@ DEFAULT_DB_PATH = os.path.join(".autoprompt", "autoprompt.db")
 
 # Settings key that stores the default project's id.
 DEFAULT_PROJECT_KEY = "default_project_id"
+
+# Run-lock statuses (mirrored as constants in autoprompt_runner.locks).
+LOCK_ACTIVE = "ACTIVE"
+LOCK_RELEASED = "RELEASED"
+LOCK_EXPIRED = "EXPIRED"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -123,6 +128,19 @@ CREATE TABLE IF NOT EXISTS worktrees (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_worktrees_name ON worktrees (name);
+
+CREATE TABLE IF NOT EXISTS run_locks (
+    id INTEGER PRIMARY KEY,
+    workspace_path TEXT NOT NULL,
+    run_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    owner TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_locks_workspace ON run_locks (workspace_path, status);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -143,6 +161,16 @@ _PROJECTS_MIGRATIONS = (
 def _utcnow_iso() -> str:
     """Current UTC time as an ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO 8601 timestamp, returning ``None`` on absence or bad input."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _resolve_db_path(db_path: Optional[str]) -> str:
@@ -909,6 +937,115 @@ def count_active_runs_for_workspace(db_path: str, workspace: Optional[str]) -> i
         conn.close()
 
 
+# -- workspace execution locks -----------------------------------------------
+
+
+def create_run_lock(
+    db_path: str,
+    workspace_path: str,
+    run_id: int,
+    status: str = LOCK_ACTIVE,
+    owner: Optional[str] = None,
+    expires_at: Optional[str] = None,
+) -> int:
+    """Insert a run lock and return its id. ``workspace_path`` should be pre-normalized."""
+    db = _resolve_db_path(db_path)
+    now = _utcnow_iso()
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "INSERT INTO run_locks (workspace_path, run_id, status, owner, created_at, updated_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (workspace_path, int(run_id), status, owner, now, now, expires_at),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def get_active_lock_for_workspace(db_path: str, workspace_path: str) -> Optional[RunLock]:
+    """Return the current ACTIVE lock for ``workspace_path`` (pre-normalized) or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM run_locks WHERE workspace_path = ? AND status = ? ORDER BY id DESC LIMIT 1",
+            (workspace_path, LOCK_ACTIVE),
+        ).fetchone()
+        return _row_to_run_lock(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def release_run_lock(db_path: str, run_id: int) -> int:
+    """Mark this run's ACTIVE lock(s) RELEASED. Returns how many rows were released."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "UPDATE run_locks SET status = ?, updated_at = ? WHERE run_id = ? AND status = ?",
+            (LOCK_RELEASED, _utcnow_iso(), int(run_id), LOCK_ACTIVE),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def expire_old_locks(db_path: str, now: str) -> int:
+    """Mark ACTIVE locks whose ``expires_at`` is before ``now`` as EXPIRED.
+
+    ``now`` is an ISO 8601 string (timezone-aware). Returns how many were expired.
+    """
+    db = _resolve_db_path(db_path)
+    now_dt = _parse_iso(now)
+    if now_dt is None:
+        return 0
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT id, expires_at FROM run_locks WHERE status = ? AND expires_at IS NOT NULL",
+            (LOCK_ACTIVE,),
+        ).fetchall()
+        expired = [row["id"] for row in rows
+                   if (_parse_iso(row["expires_at"]) is not None and _parse_iso(row["expires_at"]) < now_dt)]
+        if expired:
+            stamp = _utcnow_iso()
+            conn.executemany(
+                "UPDATE run_locks SET status = ?, updated_at = ? WHERE id = ?",
+                [(LOCK_EXPIRED, stamp, lock_id) for lock_id in expired],
+            )
+            conn.commit()
+        return len(expired)
+    finally:
+        conn.close()
+
+
+def list_locks(db_path: str, limit: int = 50) -> List[RunLock]:
+    """Return up to ``limit`` locks, newest first."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM run_locks ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+        return [_row_to_run_lock(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_lock_for_run(db_path: str, run_id: int) -> Optional[RunLock]:
+    """Return the most recent lock for ``run_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM run_locks WHERE run_id = ? ORDER BY id DESC LIMIT 1", (int(run_id),)
+        ).fetchone()
+        return _row_to_run_lock(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 # -- run logs (for polling) --------------------------------------------------
 
 _LOG_TAIL_LIMIT = 4000
@@ -1074,4 +1211,17 @@ def _row_to_worktree(row: sqlite3.Row) -> Worktree:
         status=row["status"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_run_lock(row: sqlite3.Row) -> RunLock:
+    return RunLock(
+        id=row["id"],
+        workspace_path=row["workspace_path"],
+        run_id=row["run_id"],
+        status=row["status"],
+        owner=_opt(row, "owner"),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        expires_at=_opt(row, "expires_at"),
     )

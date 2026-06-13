@@ -16,12 +16,12 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import storage  # noqa: E402
+from autoprompt_runner import locks, storage  # noqa: E402
 from autoprompt_runner.approvals import ApprovalStatus  # noqa: E402
 from autoprompt_runner.models import AgentResult, NextPrompt  # noqa: E402
 from autoprompt_runner.runners.base import AgentRunner  # noqa: E402
 from autoprompt_runner.services import RunService, RunServiceError  # noqa: E402
-from autoprompt_runner.services.run_service import SafetyBlockedError  # noqa: E402
+from autoprompt_runner.services.run_service import SafetyBlockedError, WorkspaceLockedError  # noqa: E402
 from autoprompt_runner.state import RunStatus  # noqa: E402
 
 
@@ -250,6 +250,55 @@ class SafetyHardeningTests(unittest.TestCase):
         warnings = storage.list_artifacts_for_run(self.db, report.run_id, artifact_type="safety_warning")
         self.assertTrue(warnings)
         self.assertTrue(any("secret" in (w.content or "") for w in warnings))
+
+
+class WorkspaceLockTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+        self.ws = os.path.join(self._tmp.name, "ws")
+        self.ws2 = os.path.join(self._tmp.name, "ws2")
+        os.makedirs(self.ws)
+        os.makedirs(self.ws2)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_blocks_same_workspace_concurrent_run(self):
+        locks.acquire_lock(self.db, self.ws, run_id=999, timeout_seconds=60)  # another active run holds it
+        with self.assertRaises(WorkspaceLockedError):
+            RunService(self.db).start("p", "mock", max_loops=1, require_approval=False, workspace=self.ws)
+        run = storage.list_runs(self.db)[0]
+        self.assertEqual(run.status, RunStatus.FAILED.value)
+        self.assertTrue(storage.list_artifacts_for_run(self.db, run.id, artifact_type=locks.LOCK_BLOCKER_ARTIFACT))
+
+    def test_allows_different_workspace(self):
+        locks.acquire_lock(self.db, self.ws, run_id=999, timeout_seconds=60)  # ws is locked
+        report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False, workspace=self.ws2)
+        self.assertEqual(report.run_status, RunStatus.DONE.value)  # a different workspace is unaffected
+
+    def test_waiting_approval_releases_lock(self):
+        report = RunService(self.db).start("p", "mock", max_loops=3, require_approval=True, workspace=self.ws)
+        self.assertEqual(report.run_status, RunStatus.WAITING_APPROVAL.value)
+        self.assertIsNone(locks.active_lock_for_workspace(self.db, self.ws))  # released during review
+
+    def test_approve_next_reacquires_lock(self):
+        svc = RunService(self.db)
+        run_id = svc.start("p", "mock", max_loops=3, require_approval=True, workspace=self.ws).run_id
+        locks.acquire_lock(self.db, self.ws, run_id=999, timeout_seconds=60)  # someone else grabs it
+        with self.assertRaises(WorkspaceLockedError):
+            svc.approve_and_continue(run_id)
+        self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.WAITING_APPROVAL.value)
+        self.assertIsNotNone(storage.get_pending_approval(self.db, run_id))  # approval left intact
+        locks.release_lock(self.db, 999)
+        svc.approve_and_continue(run_id)  # now the workspace is free
+        self.assertEqual(len(storage.get_steps_for_run(self.db, run_id)), 2)
+        self.assertIsNone(locks.active_lock_for_workspace(self.db, self.ws))
+
+    def test_mock_run_without_workspace_needs_no_lock(self):
+        RunService(self.db).start("p", "mock", max_loops=1, require_approval=False)
+        self.assertEqual(len(storage.list_locks(self.db)), 0)
 
 
 if __name__ == "__main__":

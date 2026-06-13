@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, config, safety, storage, templates, worktrees
+from .. import artifacts, config, locks, safety, storage, templates, worktrees
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
 from ..projects import ResolvedRunSettings, resolve_run_settings
@@ -224,6 +224,22 @@ class SafetyBlockedError(RunServiceError):
         self.blocked = list(blocked)
 
 
+class WorkspaceLockedError(RunServiceError):
+    """Raised when a run cannot execute because another active run holds the workspace.
+
+    ``kind`` is ``"locked"``; the CLI exits non-zero and the API maps it to HTTP 409.
+    """
+
+    def __init__(self, run_id: int, workspace: str, holder_run_id: int) -> None:
+        super().__init__(
+            f"workspace is locked by an active run (run {holder_run_id}): {workspace}",
+            kind="locked",
+        )
+        self.run_id = run_id
+        self.workspace = workspace
+        self.holder_run_id = holder_run_id
+
+
 class RunService:
     """Coordinates runners, storage, prompt generation, the approval gate, and artifacts."""
 
@@ -273,17 +289,32 @@ class RunService:
             )
             storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
             raise SafetyBlockedError(run_id, blocked)
-        return self._drive(
-            run_id=run_id,
-            root_prompt=prompt,
-            provider=provider,
-            max_loops=max_loops,
-            require_approval=require_approval,
-            loop_index=0,
-            prompt=prompt,
-            workspace=workspace,
-            timeout_seconds=timeout_seconds,
-        )
+
+        # Acquire the workspace lock before any runner execution (no-op without a workspace).
+        try:
+            locks.acquire_lock(self.db_path, workspace, run_id, timeout_seconds=timeout_seconds)
+        except locks.LockConflictError as exc:
+            storage.create_artifact(
+                self.db_path, run_id=run_id, artifact_type=locks.LOCK_BLOCKER_ARTIFACT, content=str(exc),
+            )
+            storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
+            raise WorkspaceLockedError(run_id, exc.workspace_path, exc.holder_run_id) from exc
+
+        try:
+            return self._drive(
+                run_id=run_id,
+                root_prompt=prompt,
+                provider=provider,
+                max_loops=max_loops,
+                require_approval=require_approval,
+                loop_index=0,
+                prompt=prompt,
+                workspace=workspace,
+                timeout_seconds=timeout_seconds,
+            )
+        finally:
+            # Release once execution pauses (WAITING_APPROVAL) or the run is terminal.
+            self._release_workspace_lock(run_id, workspace)
 
     def approve_and_continue(self, run_id: int) -> StepExecutionReport:
         """Approve the pending approval and execute the approved next prompt."""
@@ -296,20 +327,27 @@ class RunService:
         if pending is None:
             raise RunServiceError(f"no pending approval for run {run_id}", kind="no_pending")
 
-        storage.approve_pending_approval(self.db_path, run_id)
-        next_index = len(storage.get_steps_for_run(self.db_path, run_id))
-        storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
-        return self._drive(
-            run_id=run_id,
-            root_prompt=run.root_prompt,
-            provider=run.provider,
-            max_loops=run.max_loops,
-            require_approval=run.require_approval,
-            loop_index=next_index,
-            prompt=pending.next_prompt,
-            workspace=run.workspace,
-            timeout_seconds=run.timeout_seconds if run.timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS,
-        )
+        timeout_seconds = run.timeout_seconds if run.timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS
+        # Re-acquire the workspace lock before executing the next step. On a lock conflict
+        # the approval is left PENDING so the user can retry once the workspace frees up.
+        self._acquire_workspace_lock(run_id, run.workspace, timeout_seconds)
+        try:
+            storage.approve_pending_approval(self.db_path, run_id)
+            next_index = len(storage.get_steps_for_run(self.db_path, run_id))
+            storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
+            return self._drive(
+                run_id=run_id,
+                root_prompt=run.root_prompt,
+                provider=run.provider,
+                max_loops=run.max_loops,
+                require_approval=run.require_approval,
+                loop_index=next_index,
+                prompt=pending.next_prompt,
+                workspace=run.workspace,
+                timeout_seconds=timeout_seconds,
+            )
+        finally:
+            self._release_workspace_lock(run_id, run.workspace)
 
     def reject(self, run_id: int) -> StepExecutionReport:
         """Reject the pending approval and stop the run."""
@@ -322,6 +360,7 @@ class RunService:
 
         storage.reject_pending_approval(self.db_path, run_id)
         storage.update_run_status(self.db_path, run_id, RunStatus.STOPPED.value)
+        self._release_workspace_lock(run_id, run.workspace)  # release if still held
         steps = storage.get_steps_for_run(self.db_path, run_id)
         return StepExecutionReport(
             run_id=run_id,
@@ -339,6 +378,21 @@ class RunService:
         if factory is None:
             raise RunServiceError(f"unsupported provider: {provider}")
         return factory(workspace, timeout_seconds)
+
+    def _acquire_workspace_lock(self, run_id: int, workspace: Optional[str], timeout_seconds: Optional[int]):
+        """Acquire the workspace lock, converting a conflict to WorkspaceLockedError."""
+        if not workspace:
+            return None
+        try:
+            return locks.acquire_lock(self.db_path, workspace, run_id, timeout_seconds=timeout_seconds)
+        except locks.LockConflictError as exc:
+            raise WorkspaceLockedError(run_id, exc.workspace_path, exc.holder_run_id) from exc
+
+    def _release_workspace_lock(self, run_id: int, workspace: Optional[str]) -> None:
+        """Release this run's workspace lock if one is held (no-op without a workspace)."""
+        if not workspace:
+            return
+        locks.release_lock(self.db_path, run_id)
 
     def _drive(
         self,

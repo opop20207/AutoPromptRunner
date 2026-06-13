@@ -9,6 +9,7 @@ CLI-first entry point (see PROJECT.md). Commands:
   delete / render).
 * ``worktree``       -- manage isolated Git worktrees for parallel sessions (create /
   list / show / archive / remove).
+* ``locks``          -- list or manually release workspace execution locks.
 * ``run``            -- start a run; execute the first step, generate the next prompt,
   and pause at a pending approval (default) or auto-run up to ``--max-loops``.
 * ``approve-next``   -- approve a run's pending next prompt and execute it.
@@ -31,7 +32,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, safety, storage, templates, worktrees
+from . import __version__, locks, safety, storage, templates, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -84,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_commands(subparsers)
     _add_template_commands(subparsers)
     _add_worktree_commands(subparsers)
+    _add_locks_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -281,6 +283,21 @@ def _add_worktree_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Pass --force to git worktree remove and override the active-run guard.",
     )
     _add_db_path(remove_parser)
+
+
+def _add_locks_commands(subparsers: argparse._SubParsersAction) -> None:
+    locks_parser = subparsers.add_parser("locks", help="List or release workspace execution locks.")
+    locks_sub = locks_parser.add_subparsers(dest="locks_command", metavar="subcommand")
+
+    list_parser = locks_sub.add_parser("list", help="List active/recent workspace locks.")
+    list_parser.add_argument("--limit", type=int, default=50, help="Maximum number of locks to show.")
+    _add_db_path(list_parser)
+
+    release_parser = locks_sub.add_parser(
+        "release", help="Manually release a run's workspace lock (escape hatch for stale locks)."
+    )
+    release_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id whose lock to release.")
+    _add_db_path(release_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -679,6 +696,44 @@ def _dispatch_worktree(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- locks commands ----------------------------------------------------------
+
+
+def cmd_locks_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    locks.expire_locks(db_path)  # reflect any TTL expiry before listing
+    items = storage.list_locks(db_path, limit=args.limit)
+    if not items:
+        print("No locks.")
+        return EXIT_OK
+    print(f"{'ID':>4}  {'RUN':>5}  {'STATUS':<9}  {'EXPIRES_AT':<32}  WORKSPACE")
+    for lock in items:
+        print(
+            f"{lock.id:>4}  {lock.run_id:>5}  {lock.status:<9}  "
+            f"{(lock.expires_at or '(none)'):<32}  {lock.workspace_path}"
+        )
+    return EXIT_OK
+
+
+def cmd_locks_release(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    released = locks.release_lock(db_path, args.run_id)
+    if released:
+        print(f"Released {released} active lock(s) for run {args.run_id}.")
+    else:
+        print(f"No active lock to release for run {args.run_id}.")
+    return EXIT_OK
+
+
+def _dispatch_locks(args: argparse.Namespace) -> int:
+    handlers = {"list": cmd_locks_list, "release": cmd_locks_release}
+    handler = handlers.get(getattr(args, "locks_command", None))
+    if handler is None:
+        print("error: locks requires a subcommand: list, release", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -937,6 +992,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_template(args)
     if args.command == "worktree":
         return _dispatch_worktree(args)
+    if args.command == "locks":
+        return _dispatch_locks(args)
     if args.command == "run":
         return cmd_run(args)
     if args.command == "approve-next":

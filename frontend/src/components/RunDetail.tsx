@@ -9,6 +9,7 @@ import { ChangedFilesPanel } from "./ChangedFilesPanel";
 import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
 import { LiveLogPanel } from "./LiveLogPanel";
+import { LockPanel } from "./LockPanel";
 import { SafetyPanel } from "./SafetyPanel";
 import { StepList } from "./StepList";
 
@@ -96,6 +97,11 @@ export function RunDetail({
           <div className="subsection">
             <h3>Safety</h3>
             <SafetyPanel artifacts={detail.artifacts} />
+          </div>
+
+          <div className="subsection">
+            <h3>Locks</h3>
+            <LockPanel runId={detail.id} refreshKey={artifactRefresh} />
           </div>
 
           <div className="subsection">
