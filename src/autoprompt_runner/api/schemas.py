@@ -182,3 +182,37 @@ class WorktreeResponse(BaseModel):
     status: str
     created_at: str
     updated_at: str
+
+
+class SearchRunResult(BaseModel):
+    id: int
+    status: str
+    provider: str
+    created_at: str
+    prompt_preview: str
+
+
+class SearchStepResult(BaseModel):
+    id: int
+    run_id: int
+    loop_index: int
+    status: str
+    exit_code: Optional[int] = None
+    match_field: str
+    match_preview: str
+
+
+class SearchArtifactResult(BaseModel):
+    id: int
+    run_id: int
+    step_id: Optional[int] = None
+    type: str
+    created_at: str
+    match_field: str
+    match_preview: str
+
+
+class SearchAllResponse(BaseModel):
+    runs: List[SearchRunResult] = []
+    steps: List[SearchStepResult] = []
+    artifacts: List[SearchArtifactResult] = []

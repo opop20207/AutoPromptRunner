@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, cancel, locks, queue, safety, settings, storage, templates, worker, worktrees
+from . import __version__, cancel, locks, queue, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -95,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_queue_commands(subparsers)
     _add_worker_commands(subparsers)
     _add_config_commands(subparsers)
+    _add_search_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -353,6 +354,32 @@ def _add_config_commands(subparsers: argparse._SubParsersAction) -> None:
     config_sub.add_parser("validate", help="Validate the effective config; exit non-zero if invalid.")
     init_parser = config_sub.add_parser("init", help="Create .autoprompt/config.toml from the defaults.")
     init_parser.add_argument("--force", dest="force", action="store_true", help="Overwrite an existing config file.")
+
+
+def _add_search_commands(subparsers: argparse._SubParsersAction) -> None:
+    search_parser = subparsers.add_parser("search", help="Search runs, steps, and artifacts (SQLite LIKE).")
+    search_sub = search_parser.add_subparsers(dest="search_command", metavar="subcommand")
+
+    runs_parser = search_sub.add_parser("runs", help="Search runs by prompt / provider / status.")
+    runs_parser.add_argument("--query", default=None, help="Text to match (case-insensitive).")
+    runs_parser.add_argument("--status", default=None, help="Filter by run status.")
+    runs_parser.add_argument("--provider", default=None, help="Filter by provider.")
+    runs_parser.add_argument("--limit", type=int, default=50, help="Max results (hard cap 200).")
+    runs_parser.add_argument("--offset", type=int, default=0, help="Result offset for pagination.")
+    _add_db_path(runs_parser)
+
+    artifacts_parser = search_sub.add_parser("artifacts", help="Search artifacts by content / type / path.")
+    artifacts_parser.add_argument("--query", default=None, help="Text to match (case-insensitive).")
+    artifacts_parser.add_argument("--type", dest="type", default=None, help="Filter by artifact type.")
+    artifacts_parser.add_argument("--limit", type=int, default=50, help="Max results (hard cap 200).")
+    artifacts_parser.add_argument("--offset", type=int, default=0, help="Result offset for pagination.")
+    _add_db_path(artifacts_parser)
+
+    all_parser = search_sub.add_parser("all", help="Search runs, steps, and artifacts together.")
+    all_parser.add_argument("--query", default=None, help="Text to match (case-insensitive).")
+    all_parser.add_argument("--limit", type=int, default=50, help="Max results per group (hard cap 200).")
+    all_parser.add_argument("--offset", type=int, default=0, help="Result offset for pagination.")
+    _add_db_path(all_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -936,6 +963,69 @@ def _dispatch_config(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- search commands ---------------------------------------------------------
+
+
+def cmd_search_runs(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    results = search.search_runs(
+        db_path, query=args.query, status=args.status, provider=args.provider,
+        limit=args.limit, offset=args.offset,
+    )
+    if not results:
+        print("No matching runs.")
+        return EXIT_OK
+    print(f"{'ID':>4}  {'STATUS':<16}  {'PROVIDER':<12}  {'CREATED_AT':<32}  PROMPT")
+    for r in results:
+        print(
+            f"{r.id:>4}  {r.status:<16}  {r.provider:<12}  {(r.created_at or ''):<32}  "
+            f"{_shorten(r.prompt_preview, 50)}"
+        )
+    return EXIT_OK
+
+
+def cmd_search_artifacts(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    results = search.search_artifacts(
+        db_path, query=args.query, artifact_type=args.type, limit=args.limit, offset=args.offset,
+    )
+    if not results:
+        print("No matching artifacts.")
+        return EXIT_OK
+    print(f"{'ID':>5}  {'RUN':>4}  {'STEP':>4}  {'TYPE':<18}  {'CREATED_AT':<32}  PREVIEW")
+    for a in results:
+        step = str(a.step_id) if a.step_id is not None else "-"
+        print(
+            f"{a.id:>5}  {a.run_id:>4}  {step:>4}  {a.type:<18}  {(a.created_at or ''):<32}  "
+            f"{_shorten(a.match_preview, 50)}"
+        )
+    return EXIT_OK
+
+
+def cmd_search_all(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    result = search.search_all(db_path, query=args.query, limit=args.limit, offset=args.offset)
+    print(f"Runs ({len(result.runs)}):")
+    for r in result.runs:
+        print(f"  #{r.id} {r.status} {r.provider} -- {_shorten(r.prompt_preview, 60)}")
+    print(f"Steps ({len(result.steps)}):")
+    for s in result.steps:
+        print(f"  run #{s.run_id} step #{s.loop_index} [{s.match_field}] -- {_shorten(s.match_preview, 60)}")
+    print(f"Artifacts ({len(result.artifacts)}):")
+    for a in result.artifacts:
+        print(f"  #{a.id} run #{a.run_id} {a.type} [{a.match_field}] -- {_shorten(a.match_preview, 60)}")
+    return EXIT_OK
+
+
+def _dispatch_search(args: argparse.Namespace) -> int:
+    handlers = {"runs": cmd_search_runs, "artifacts": cmd_search_artifacts, "all": cmd_search_all}
+    handler = handlers.get(getattr(args, "search_command", None))
+    if handler is None:
+        print("error: search requires a subcommand: runs, artifacts, all", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -1237,6 +1327,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_worker(args)
     if args.command == "config":
         return _dispatch_config(args)
+    if args.command == "search":
+        return _dispatch_search(args)
     if args.command == "run":
         if getattr(args, "run_command", None) == "cancel":
             return cmd_run_cancel(args)

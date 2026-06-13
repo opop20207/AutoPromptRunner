@@ -16,6 +16,7 @@ export function ArtifactList({
 }) {
   const [items, setItems] = useState<ArtifactSummary[]>([]);
   const [filter, setFilter] = useState<string>("all");
+  const [contains, setContains] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -35,6 +36,14 @@ export function ArtifactList({
     void load();
   }, [runId, refreshKey, filter]);
 
+  // Local, client-side narrowing over the already-loaded artifacts (no extra request).
+  const needle = contains.trim().toLowerCase();
+  const shown = needle
+    ? items.filter(
+        (a) => a.type.toLowerCase().includes(needle) || a.preview.toLowerCase().includes(needle),
+      )
+    : items;
+
   return (
     <div>
       <div className="artifact-filter">
@@ -48,6 +57,14 @@ export function ArtifactList({
             ))}
           </select>
         </label>
+        <label>
+          Contains
+          <input
+            value={contains}
+            onChange={(e) => setContains(e.target.value)}
+            placeholder="filter loaded rows"
+          />
+        </label>
         <button onClick={() => void load()} disabled={loading}>
           Refresh
         </button>
@@ -55,7 +72,10 @@ export function ArtifactList({
       {error && <p className="error">{error}</p>}
       {loading && <p className="muted">Loading…</p>}
       {!loading && !error && items.length === 0 && <p className="muted">No artifacts.</p>}
-      {items.length > 0 && (
+      {items.length > 0 && shown.length === 0 && (
+        <p className="muted">No artifacts match “{contains}”.</p>
+      )}
+      {shown.length > 0 && (
         <div className="scroll">
           <table className="table">
             <thead>
@@ -68,7 +88,7 @@ export function ArtifactList({
               </tr>
             </thead>
             <tbody>
-              {items.map((artifact) => (
+              {shown.map((artifact) => (
                 <tr
                   key={artifact.id}
                   className={"clickable" + (artifact.id === selectedId ? " selected" : "")}

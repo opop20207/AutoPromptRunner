@@ -175,6 +175,40 @@ export interface QueueJob {
   last_error?: string | null;
 }
 
+export interface SearchRunResult {
+  id: number;
+  status: string;
+  provider: string;
+  created_at: string;
+  prompt_preview: string;
+}
+
+export interface SearchStepResult {
+  id: number;
+  run_id: number;
+  loop_index: number;
+  status: string;
+  exit_code?: number | null;
+  match_field: string;
+  match_preview: string;
+}
+
+export interface SearchArtifactResult {
+  id: number;
+  run_id: number;
+  step_id?: number | null;
+  type: string;
+  created_at: string;
+  match_field: string;
+  match_preview: string;
+}
+
+export interface SearchAllResponse {
+  runs: SearchRunResult[];
+  steps: SearchStepResult[];
+  artifacts: SearchArtifactResult[];
+}
+
 export interface Step {
   id: number;
   loop_index: number;

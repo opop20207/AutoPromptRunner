@@ -338,11 +338,22 @@ pre.block {
   color: var(--muted);
 }
 
-.artifact-filter select {
+.artifact-filter select,
+.artifact-filter input {
   font: inherit;
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+
+/* -- search result previews (wrap long matched text, keep it readable) -- */
+
+.preview-cell {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: normal;
+  word-break: break-word;
+  max-width: 460px;
 }
 
 .artifact-head {

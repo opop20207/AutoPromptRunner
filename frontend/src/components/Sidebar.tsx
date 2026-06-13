@@ -5,6 +5,7 @@ export type SectionKey =
   | "worktrees"
   | "new-run"
   | "runs"
+  | "search"
   | "queue"
   | "detail";
 
@@ -15,6 +16,7 @@ const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "worktrees", label: "Worktrees" },
   { key: "new-run", label: "New Run" },
   { key: "runs", label: "Runs" },
+  { key: "search", label: "Search" },
   { key: "queue", label: "Queue" },
 ];
 

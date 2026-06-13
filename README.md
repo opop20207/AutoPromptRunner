@@ -27,6 +27,7 @@ above (or scroll) for the full feature tour; each capability has its own section
 - Read-only Git artifact capture (status / diff / changed files)
 - Git worktree parallel sessions and workspace execution locks
 - Local run queue with a background worker, and run cancellation
+- Search across runs, logs, prompts, and artifacts (SQLite `LIKE`)
 - Config file + environment overrides
 - Safety checks (blocked commands, secret-file warnings, hard limits)
 
@@ -596,6 +597,69 @@ python -m autoprompt_runner.cli show-artifact --id 1
 `show-artifact` exits non-zero with a clean error if the artifact id does not exist.
 `show-run` also prints each step's changed files and diff-stat summary when available.
 
+## Search
+
+As run history grows it gets hard to find a previous run, the log of an error, a
+generated prompt, or which run touched a given file. **Search** scans the stored history
+and returns compact, ranked matches across **runs**, **steps** (prompts and stdout /
+stderr), and **artifacts** (including `changed_files` paths).
+
+Search is **plain SQLite `LIKE`** over the local database -- no external search engine,
+no full-text-search dependency, and no semantic / vector search. It is **case-insensitive**
+and only ever reads **stored database content**: it never reads files from disk during a
+search, and results carry small previews (a window around the match, or the first ~300
+characters) rather than full artifact bodies, so large logs are never dumped and secrets
+are not surfaced. Results default to **50** per query, are hard-capped at **200**, and
+support `--limit` / `--offset` (API `limit` / `offset`) pagination.
+
+What each scope matches:
+
+- **runs** -> the root prompt, provider, and status (plus optional `status` / `provider`
+  filters).
+- **steps** -> the step prompt, stdout, stderr, and generated next prompt.
+- **artifacts** -> the artifact type, content, and path (plus an optional `type` filter);
+  `changed_files` artifacts make file-path searches work (find every run that changed a
+  given file).
+
+CLI (`search` command group):
+
+```
+python -m autoprompt_runner.cli search runs --query placement              # by prompt/provider/status
+python -m autoprompt_runner.cli search runs --status FAILED --provider codex
+python -m autoprompt_runner.cli search artifacts --query Traceback --type runner_stderr
+python -m autoprompt_runner.cli search artifacts --query src/app.py        # which runs touched a file
+python -m autoprompt_runner.cli search all --query "preview" --limit 25    # grouped runs/steps/artifacts
+```
+
+`search runs` accepts `--query` / `--status` / `--provider` / `--limit` / `--offset`,
+`search artifacts` accepts `--query` / `--type` / `--limit` / `--offset`, and `search all`
+accepts `--query` / `--limit` / `--offset` and prints grouped, compact results. An empty
+query returns the most recent items (optionally narrowed by the filters).
+
+API (`/search` route group; same local database):
+
+```
+curl "http://127.0.0.1:8000/search/runs?q=placement&status=FAILED&provider=codex"
+curl "http://127.0.0.1:8000/search/artifacts?q=Traceback&type=runner_stderr"
+curl "http://127.0.0.1:8000/search/all?q=preview&limit=25"
+```
+
+`GET /search/runs` (`q`, `status`, `provider`, `limit`, `offset`) and
+`GET /search/artifacts` (`q`, `type`, `limit`, `offset`) return compact result lists;
+`GET /search/all` (`q`, `limit`, `offset`) returns `{runs, steps, artifacts}` grouped.
+Each result carries `match_field` / preview metadata, never full artifact content.
+
+In the **web UI**, the *Search* section has a single query box with a target selector
+(all / runs / artifacts), status / provider / artifact-type filters, and a 25 / 50 / 100
+limit, plus loading / empty / error states. A run or step result is clickable and opens
+the run detail; an artifact result is clickable and loads its full content in the inline
+artifact viewer. The *Runs* section has a *Search* shortcut, and the run-detail artifact
+list has a local "contains" box to narrow already-loaded artifacts without another request.
+
+**Limitations.** Substring `LIKE` matching only (no ranking by relevance, stemming,
+fuzzy matching, or natural-language queries); it searches only what has been stored in the
+database (not the working tree); and previews are intentionally short.
+
 ## Claude Code provider
 
 The `claude-code` provider runs the real Claude Code CLI as a subprocess.
@@ -700,8 +764,8 @@ A minimal React + Vite + TypeScript **dashboard** lives in `frontend/` (see
 [frontend/README.md](frontend/README.md)). It is a thin, **local-first and unauthenticated**
 shell over the HTTP API -- no router, no state library, no UI framework. A left **sidebar**
 navigates between sections with simple local state (no routing): **Overview**,
-**Projects**, **Templates**, **Worktrees**, **New Run**, **Runs**, **Queue**, and -- once a
-run is open -- **Run Detail**. The active section is highlighted.
+**Projects**, **Templates**, **Worktrees**, **New Run**, **Runs**, **Search**, **Queue**,
+and -- once a run is open -- **Run Detail**. The active section is highlighted.
 
 - **Overview** shows compact cards: backend health, recent-run count, queued / running
   jobs, failed runs, the default and selected project, and a reminder to start a worker
@@ -822,6 +886,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Project profiles and prompt templates
 - [x] Git worktrees and workspace locks
 - [x] Local queue + background worker, and run cancellation
+- [x] Search across runs, logs, prompts, and artifacts (CLI / API / web UI)
 - [x] Config file / environment overrides (`config show` / `validate` / `init`)
 - [x] FastAPI backend and the React/Vite frontend build
 - [x] End-to-end CLI and API flow tests pass

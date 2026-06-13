@@ -1310,6 +1310,124 @@ def list_cancellations(db_path: str, limit: int = 50) -> List[RunCancellation]:
         conn.close()
 
 
+# -- search (SQLite LIKE; no external engine, no disk reads) ------------------
+
+
+def _like_pattern(query: str) -> str:
+    """Escape LIKE wildcards in ``query`` and wrap it as a ``%contains%`` pattern."""
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def search_runs(
+    db_path: str,
+    query: Optional[str] = None,
+    status: Optional[str] = None,
+    provider: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[StoredRun]:
+    """Return runs matching the LIKE query / filters, newest first."""
+    clauses: List[str] = []
+    params: List[object] = []
+    if query:
+        like = _like_pattern(query)
+        clauses.append("(root_prompt LIKE ? ESCAPE '\\' OR provider LIKE ? ESCAPE '\\' OR status LIKE ? ESCAPE '\\')")
+        params += [like, like, like]
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if provider:
+        clauses.append("provider = ?")
+        params.append(provider)
+    if date_from:
+        clauses.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("created_at <= ?")
+        params.append(date_to)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM runs {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            [*params, int(limit), int(offset)],
+        ).fetchall()
+        return [_row_to_run(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def search_steps(
+    db_path: str,
+    query: Optional[str] = None,
+    run_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[StoredStep]:
+    """Return steps whose prompt / stdout / stderr / next_prompt match the LIKE query."""
+    clauses: List[str] = []
+    params: List[object] = []
+    if query:
+        like = _like_pattern(query)
+        clauses.append(
+            "(prompt LIKE ? ESCAPE '\\' OR stdout LIKE ? ESCAPE '\\' "
+            "OR stderr LIKE ? ESCAPE '\\' OR next_prompt LIKE ? ESCAPE '\\')"
+        )
+        params += [like, like, like, like]
+    if run_id is not None:
+        clauses.append("run_id = ?")
+        params.append(int(run_id))
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM steps {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            [*params, int(limit), int(offset)],
+        ).fetchall()
+        return [_row_to_step(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def search_artifacts(
+    db_path: str,
+    query: Optional[str] = None,
+    artifact_type: Optional[str] = None,
+    run_id: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Artifact]:
+    """Return artifacts whose type / content / path match the LIKE query / filters."""
+    clauses: List[str] = []
+    params: List[object] = []
+    if query:
+        like = _like_pattern(query)
+        clauses.append("(type LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\')")
+        params += [like, like, like]
+    if artifact_type:
+        clauses.append("type = ?")
+        params.append(artifact_type)
+    if run_id is not None:
+        clauses.append("run_id = ?")
+        params.append(int(run_id))
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM artifacts {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            [*params, int(limit), int(offset)],
+        ).fetchall()
+        return [_row_to_artifact(row) for row in rows]
+    finally:
+        conn.close()
+
+
 # -- run logs (for polling) --------------------------------------------------
 
 _LOG_TAIL_LIMIT = 4000

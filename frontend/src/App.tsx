@@ -9,6 +9,7 @@ import { QueuePanel } from "./components/QueuePanel";
 import { RunDetail } from "./components/RunDetail";
 import { RunForm } from "./components/RunForm";
 import { RunList } from "./components/RunList";
+import { SearchPanel } from "./components/SearchPanel";
 import { Sidebar, type SectionKey } from "./components/Sidebar";
 import { TemplateForm } from "./components/TemplateForm";
 import { TemplateList } from "./components/TemplateList";
@@ -106,7 +107,15 @@ export default function App() {
         />
       )}
 
-      {section === "runs" && <RunList refreshKey={runRefresh} onSelect={openRun} />}
+      {section === "runs" && (
+        <RunList
+          refreshKey={runRefresh}
+          onSelect={openRun}
+          onOpenSearch={() => setSection("search")}
+        />
+      )}
+
+      {section === "search" && <SearchPanel onSelectRun={openRun} />}
 
       {section === "queue" && (
         <Section title="Queue">

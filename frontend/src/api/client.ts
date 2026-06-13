@@ -15,6 +15,9 @@ import type {
   RunSummary,
   QueueJob,
   RunLock,
+  SearchAllResponse,
+  SearchArtifactResult,
+  SearchRunResult,
   Template,
   TemplateCreate,
   TemplateRender,
@@ -23,6 +26,15 @@ import type {
 } from "../types";
 
 const BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+
+function queryString(params: Record<string, string | number | undefined | null>): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") qs.set(key, String(value));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
 
 export class ApiError extends Error {
   status: number;
@@ -128,6 +140,12 @@ export const api = {
       reason: string | null;
       message: string;
     }>(`/runs/${runId}/cancel`, { method: "POST", body: JSON.stringify({ reason: reason ?? null }) }),
+  searchRuns: (params: { q?: string; status?: string; provider?: string; limit?: number; offset?: number }) =>
+    request<SearchRunResult[]>(`/search/runs${queryString(params)}`),
+  searchArtifacts: (params: { q?: string; type?: string; limit?: number; offset?: number }) =>
+    request<SearchArtifactResult[]>(`/search/artifacts${queryString(params)}`),
+  searchAll: (params: { q?: string; limit?: number; offset?: number }) =>
+    request<SearchAllResponse>(`/search/all${queryString(params)}`),
 };
 
 export function errorMessage(err: unknown): string {

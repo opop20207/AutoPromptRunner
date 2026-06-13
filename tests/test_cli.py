@@ -710,5 +710,42 @@ class ConfigCliTests(unittest.TestCase):
         self.assertEqual(code3, 0, err3)
 
 
+class SearchCliTests(_DbTestCase):
+    def setUp(self):
+        super().setUp()
+        storage.init_db(self.db)
+        self.run1 = storage.create_run(
+            self.db, root_prompt="Fix the failing tests", provider="mock", max_loops=1, require_approval=False
+        )
+        step = storage.create_step(self.db, self.run1, 0, "run tests", "DONE", stderr="Traceback boom")
+        storage.create_artifact(
+            self.db, self.run1, "runner_stderr", content="Traceback (most recent call last)", step_id=step
+        )
+
+    def test_search_runs(self):
+        code, out, err = run_cli(["search", "runs", "--query", "failing", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn(str(self.run1), out)
+
+    def test_search_runs_no_match(self):
+        code, out, err = run_cli(["search", "runs", "--query", "zzz-no-such-text", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("No matching runs", out)
+
+    def test_search_artifacts(self):
+        code, out, err = run_cli(
+            ["search", "artifacts", "--query", "Traceback", "--type", "runner_stderr", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("runner_stderr", out)
+
+    def test_search_all(self):
+        code, out, err = run_cli(["search", "all", "--query", "Traceback", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Runs (", out)
+        self.assertIn("Steps (", out)
+        self.assertIn("Artifacts (", out)
+
+
 if __name__ == "__main__":
     unittest.main()

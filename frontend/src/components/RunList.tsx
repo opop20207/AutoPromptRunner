@@ -15,9 +15,11 @@ function shorten(text: string, limit = 60): string {
 export function RunList({
   refreshKey,
   onSelect,
+  onOpenSearch,
 }: {
   refreshKey: number;
   onSelect: (id: number) => void;
+  onOpenSearch?: () => void;
 }) {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -70,9 +72,12 @@ export function RunList({
     <Section
       title="Runs"
       actions={
-        <button onClick={() => void load()} disabled={loading}>
-          Refresh
-        </button>
+        <div className="row-actions">
+          {onOpenSearch && <button onClick={onOpenSearch}>Search</button>}
+          <button onClick={() => void load()} disabled={loading}>
+            Refresh
+          </button>
+        </div>
       }
     >
       <div className="filters">
