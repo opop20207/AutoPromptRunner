@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from os import path as _ospath
 from typing import List, Optional
 
+from .. import config
 from ..models import AgentResult
 from .base import AgentRunner
 
@@ -58,7 +59,8 @@ class CodexRunner(AgentRunner):
         workspace: Optional[str] = None,
     ) -> None:
         self.command = command
-        self.timeout_seconds = int(timeout_seconds)
+        # Clamp to the safety hard limit so a runner can never exceed the max runtime.
+        self.timeout_seconds = max(1, min(int(timeout_seconds), config.TIMEOUT_SECONDS_HARD_LIMIT))
         self.workspace = workspace
         if self.workspace is not None and not _ospath.isdir(self.workspace):
             raise ValueError(f"workspace does not exist or is not a directory: {self.workspace}")

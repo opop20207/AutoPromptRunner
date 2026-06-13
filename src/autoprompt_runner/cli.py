@@ -27,7 +27,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, storage
+from . import __version__, safety, storage
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -70,6 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     init_parser = subparsers.add_parser("init-db", help="Create the local SQLite database.")
     _add_db_path(init_parser)
+
+    safety_parser = subparsers.add_parser(
+        "safety-check", help="Run prompt/workspace safety checks without executing an agent."
+    )
+    safety_parser.add_argument("--prompt", required=True, help="Prompt to scan for blocked command patterns.")
+    safety_parser.add_argument("--workspace", default=None, help="Workspace directory to validate (optional).")
 
     _add_project_commands(subparsers)
 
@@ -191,6 +197,35 @@ def cmd_init_db(args: argparse.Namespace) -> int:
     path = storage.init_db(args.db_path)
     print(f"Database initialized at: {path}")
     return EXIT_OK
+
+
+def cmd_safety_check(args: argparse.Namespace) -> int:
+    """Run prompt/workspace safety checks only (no agent execution)."""
+    prompt = (args.prompt or "").strip()
+    blockers = []
+    warnings = []
+    if not prompt:
+        blockers.append("--prompt must not be empty")
+    else:
+        for pattern in safety.scan_prompt_for_blocked_commands(prompt):
+            blockers.append(f"blocked command pattern in prompt: {pattern}")
+    if args.workspace:
+        if not os.path.isdir(args.workspace):
+            blockers.append(f"workspace does not exist or is not a directory: {args.workspace}")
+        else:
+            try:
+                safety.validate_workspace_allowed(args.workspace)
+            except ValueError as exc:
+                blockers.append(str(exc))
+
+    print("Safety check")
+    print("  blockers:")
+    for item in blockers or ["none"]:
+        print(f"    - {item}")
+    print("  warnings:")
+    for item in warnings or ["none"]:
+        print(f"    - {item}")
+    return EXIT_RUN_FAILED if blockers else EXIT_OK
 
 
 # -- project commands --------------------------------------------------------
@@ -333,6 +368,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     _print_step_report(report, show_next_prompt=args.show_next_prompt)
+    _print_safety_warnings(args.db_path, report.run_id)
     return _exit_code_for(report)
 
 
@@ -484,6 +520,15 @@ def _shorten(text: Optional[str], limit: int) -> str:
     return collapsed[: max(0, limit - 3)] + "..."
 
 
+def _print_safety_warnings(db_path: Optional[str], run_id: int) -> None:
+    """Print compact safety-warning artifacts recorded for a run, if any."""
+    warnings = storage.list_artifacts_for_run(db_path, run_id, artifact_type=safety.SAFETY_WARNING_ARTIFACT)
+    if warnings:
+        print("Safety warnings:")
+        for warning in warnings:
+            print(f"  - {_shorten(warning.content, 100)}")
+
+
 def _print_step_report(report: StepExecutionReport, show_next_prompt: bool = False) -> None:
     """Print a compact report for a run step / advance.
 
@@ -536,6 +581,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_version()
     if args.command == "init-db":
         return cmd_init_db(args)
+    if args.command == "safety-check":
+        return cmd_safety_check(args)
     if args.command == "project":
         return _dispatch_project(args)
     if args.command == "run":

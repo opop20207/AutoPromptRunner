@@ -1,7 +1,7 @@
 import { type FormEvent, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
-import { PROVIDERS } from "../types";
+import { MAX_LOOPS_HARD_LIMIT, PROVIDERS, TIMEOUT_SECONDS_HARD_LIMIT } from "../types";
 import { Section } from "./Layout";
 
 export function RunForm({
@@ -74,19 +74,21 @@ export function RunForm({
           <input value={workspace} onChange={(e) => setWorkspace(e.target.value)} />
         </label>
         <label>
-          Max loops (blank uses project / default)
+          Max loops (blank uses project/default; hard limit {MAX_LOOPS_HARD_LIMIT})
           <input
             type="number"
             min={1}
+            max={MAX_LOOPS_HARD_LIMIT}
             value={maxLoops}
             onChange={(e) => setMaxLoops(e.target.value)}
           />
         </label>
         <label>
-          Timeout seconds (blank uses project / default)
+          Timeout seconds (blank uses project/default; hard limit {TIMEOUT_SECONDS_HARD_LIMIT})
           <input
             type="number"
             min={1}
+            max={TIMEOUT_SECONDS_HARD_LIMIT}
             value={timeoutSeconds}
             onChange={(e) => setTimeoutSeconds(e.target.value)}
           />

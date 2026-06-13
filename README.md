@@ -41,6 +41,48 @@ with a PENDING approval; `--no-approval` auto-runs up to `--max-loops`. `max_loo
 a hard bound, so the loop can never run forever. Status follows
 `CREATED -> RUNNING -> WAITING_APPROVAL -> DONE / FAILED / STOPPED`.
 
+## Safety hardening and execution limits
+
+Safety checks are **deterministic, offline, and read-only** (no network, no AI). They
+run in `autoprompt_runner.safety` against the constants in `autoprompt_runner.config`.
+
+- **Execution limits (hard bounds).** `--max-loops` defaults to the project/built-in
+  value and is rejected above the hard limit of **20**; `--timeout-seconds` defaults to
+  1800 and is rejected above the hard limit of **7200**. The CLI exits non-zero and the
+  API returns `400` when a value exceeds its hard limit; runner timeouts are also clamped
+  to the hard limit.
+- **Blocked command patterns (pre-execution).** The prompt is scanned **before** the
+  runner executes. If it contains a destructive pattern -- e.g. `rm -rf /`, `rm -rf *`,
+  `git reset --hard`, `git clean -fd`, `git push --force`, `sudo rm`, `del /s`, `format`,
+  `mkfs`, `shutdown`, `reboot` -- the run is marked `FAILED`, a `safety_blocker` artifact
+  is recorded, the runner never runs, and the API returns `400`. Matching is word-boundary
+  and case-insensitive, so ordinary words (e.g. "information") are not false positives.
+- **Secret-file denylist (post-step, name-only).** After a step, changed file **names**
+  are matched against the secret denylist (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa`,
+  `id_dsa`, `id_ed25519`, `secrets.*`, `credentials.*`, `service-account*.json`, `*.p12`,
+  `*.pfx`). **Secret file contents are never read or printed** -- only the path/basename
+  is inspected -- and a compact `safety_warning` artifact records the match.
+- **Large-diff warning.** A change touching more than **20** files, or more than **1000**
+  combined insertions/deletions (parsed from the diff stat), records a `safety_warning`.
+- **Risky runs force approval.** When a step produces a secret-file or large-diff finding,
+  the run pauses at `WAITING_APPROVAL` **even when `--no-approval` was passed**, so a human
+  reviews the change before it continues.
+- **Workspace allowlist (optional).** Set `AUTOPROMPT_WORKSPACE_ALLOWLIST` (OS path-list
+  separated) to restrict runs to workspaces contained within those roots; an out-of-root
+  workspace is rejected with a clean error. Unset means no restriction.
+
+Check a prompt (and optional workspace) without executing anything:
+
+```
+python -m autoprompt_runner.cli safety-check --prompt "Continue next task"
+python -m autoprompt_runner.cli safety-check --prompt "rm -rf / the repo" --workspace /path/to/project
+```
+
+`safety-check` prints blockers and warnings and exits non-zero when any blocker is found.
+The `run` command prints a compact list of safety warnings after the run. Safety findings
+are stored as artifacts (`safety_blocker`, `safety_warning`) and surfaced in the API run
+response (`warnings`) and the Web UI **Safety** panel.
+
 ## Next-prompt generation
 
 The next prompt is produced by a **rule-based** generator -- it calls no external AI

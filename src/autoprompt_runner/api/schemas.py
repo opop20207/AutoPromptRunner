@@ -56,6 +56,7 @@ class RunSummaryResponse(BaseModel):
     step_id: Optional[int] = None
     exit_code: Optional[int] = None
     message: Optional[str] = None
+    warnings: List[str] = []
 
 
 class StepResponse(BaseModel):

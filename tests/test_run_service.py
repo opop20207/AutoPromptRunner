@@ -21,6 +21,7 @@ from autoprompt_runner.approvals import ApprovalStatus  # noqa: E402
 from autoprompt_runner.models import AgentResult, NextPrompt  # noqa: E402
 from autoprompt_runner.runners.base import AgentRunner  # noqa: E402
 from autoprompt_runner.services import RunService, RunServiceError  # noqa: E402
+from autoprompt_runner.services.run_service import SafetyBlockedError  # noqa: E402
 from autoprompt_runner.state import RunStatus  # noqa: E402
 
 
@@ -210,6 +211,45 @@ class PromptContextTests(unittest.TestCase):
         context = recorder.contexts[0]
         self.assertEqual(context.changed_files, [])
         self.assertEqual(context.git_diff_stat, "")
+
+
+class SafetyHardeningTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_blocks_dangerous_prompt_before_execution(self):
+        with self.assertRaises(SafetyBlockedError):
+            RunService(self.db).start("please run rm -rf / on the repo", "mock", max_loops=2, require_approval=False)
+        run = storage.list_runs(self.db)[0]
+        self.assertEqual(run.status, RunStatus.FAILED.value)
+        self.assertEqual(len(storage.get_steps_for_run(self.db, run.id)), 0)  # runner never executed
+        self.assertTrue(storage.list_artifacts_for_run(self.db, run.id, artifact_type="safety_blocker"))
+
+    def test_max_loops_hard_limit_raises(self):
+        from autoprompt_runner import config
+
+        with self.assertRaises(ValueError):
+            RunService(self.db).start("p", "mock", max_loops=config.MAX_LOOPS_HARD_LIMIT + 1, require_approval=False)
+
+    def test_stores_warnings_and_forces_approval_on_risky_change(self):
+        repo = os.path.join(self._tmp.name, "repo")
+        os.makedirs(repo)
+        subprocess.run(
+            ["git", "-c", "user.email=t@example.com", "-c", "user.name=test", "init", "-q"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        with open(os.path.join(repo, ".env"), "w", encoding="utf-8") as handle:
+            handle.write("X=1\n")  # secret-like untracked file -> risky change
+        report = RunService(self.db).start("update config", "mock", max_loops=2, require_approval=False, workspace=repo)
+        # Risky change forces an approval gate even though require_approval was False.
+        self.assertEqual(report.run_status, RunStatus.WAITING_APPROVAL.value)
+        warnings = storage.list_artifacts_for_run(self.db, report.run_id, artifact_type="safety_warning")
+        self.assertTrue(warnings)
+        self.assertTrue(any("secret" in (w.content or "") for w in warnings))
 
 
 if __name__ == "__main__":

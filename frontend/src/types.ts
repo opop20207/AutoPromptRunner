@@ -2,6 +2,10 @@
 
 export const PROVIDERS = ["mock", "claude-code", "codex"] as const;
 
+// Safety hard limits (mirrors autoprompt_runner.config), used for UI hints.
+export const MAX_LOOPS_HARD_LIMIT = 20;
+export const TIMEOUT_SECONDS_HARD_LIMIT = 7200;
+
 export type RunStatus =
   | "CREATED"
   | "RUNNING"
@@ -61,6 +65,7 @@ export interface RunSummary {
   step_id?: number | null;
   exit_code?: number | null;
   message?: string | null;
+  warnings?: string[];
 }
 
 export interface RunCreate {

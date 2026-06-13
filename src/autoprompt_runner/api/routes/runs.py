@@ -7,7 +7,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from ... import storage
+from ... import safety, storage
 from ...models import Approval, Artifact, StepExecutionReport, StoredRun, StoredStep
 from ...services.run_service import RunInputError, RunService, RunServiceError, resolve_run_inputs
 from ..dependencies import get_db_path
@@ -71,6 +71,12 @@ def _summary_from_report(db_path: str, report: StepExecutionReport, show_next_pr
         step_id=report.step_id,
         exit_code=report.exit_code,
         message=report.message,
+        warnings=[
+            artifact.content or ""
+            for artifact in storage.list_artifacts_for_run(
+                db_path, report.run_id, artifact_type=safety.SAFETY_WARNING_ARTIFACT
+            )
+        ],
     )
 
 

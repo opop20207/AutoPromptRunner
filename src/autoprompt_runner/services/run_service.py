@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, storage
+from .. import artifacts, config, safety, storage
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
 from ..projects import ResolvedRunSettings, resolve_run_settings
@@ -123,8 +123,16 @@ def resolve_run_inputs(
         raise RunInputError("invalid", f"unsupported provider '{settings.provider}'. Supported: {supported}")
     if settings.max_loops < 1:
         raise RunInputError("invalid", "--max-loops must be >= 1")
+    if settings.max_loops > config.MAX_LOOPS_HARD_LIMIT:
+        raise RunInputError(
+            "invalid", f"--max-loops must not exceed the hard limit of {config.MAX_LOOPS_HARD_LIMIT}"
+        )
     if settings.timeout_seconds < 1:
         raise RunInputError("invalid", "--timeout-seconds must be >= 1")
+    if settings.timeout_seconds > config.TIMEOUT_SECONDS_HARD_LIMIT:
+        raise RunInputError(
+            "invalid", f"--timeout-seconds must not exceed the hard limit of {config.TIMEOUT_SECONDS_HARD_LIMIT}"
+        )
     if settings.provider in WORKSPACE_REQUIRED_PROVIDERS:
         if not settings.workspace:
             raise RunInputError(
@@ -134,6 +142,10 @@ def resolve_run_inputs(
             )
         if not os.path.isdir(settings.workspace):
             raise RunInputError("invalid", f"workspace does not exist or is not a directory: {settings.workspace}")
+    try:
+        safety.validate_workspace_allowed(settings.workspace)
+    except ValueError as exc:
+        raise RunInputError("invalid", str(exc)) from exc
     return text, settings
 
 
@@ -156,6 +168,22 @@ class RunServiceError(Exception):
     def __init__(self, message: str, kind: str = "error") -> None:
         super().__init__(message)
         self.kind = kind
+
+
+class SafetyBlockedError(RunServiceError):
+    """Raised when a prompt contains a blocked (destructive) command pattern.
+
+    The run is recorded as FAILED with a ``safety_blocker`` artifact before this is
+    raised. ``kind`` is ``"blocked"``; the API maps it to HTTP 400.
+    """
+
+    def __init__(self, run_id: int, blocked: List[str]) -> None:
+        super().__init__(
+            "run blocked by safety: prompt contains blocked command pattern(s): " + ", ".join(blocked),
+            kind="blocked",
+        )
+        self.run_id = run_id
+        self.blocked = list(blocked)
 
 
 class RunService:
@@ -185,6 +213,8 @@ class RunService:
         """Create a run and execute it according to the loop policy."""
         if provider not in self.providers:
             raise RunServiceError(f"unsupported provider: {provider}")
+        safety.validate_max_loops(max_loops)  # hard-limit backstop (CLI/API validate earlier)
+        safety.validate_timeout_seconds(timeout_seconds)
         run_id = storage.create_run(
             self.db_path,
             root_prompt=prompt,
@@ -195,6 +225,16 @@ class RunService:
             timeout_seconds=timeout_seconds,
         )
         storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
+        blocked = safety.scan_prompt_for_blocked_commands(prompt)
+        if blocked:
+            storage.create_artifact(
+                self.db_path,
+                run_id=run_id,
+                artifact_type=safety.SAFETY_BLOCKER_ARTIFACT,
+                content="blocked command pattern(s): " + ", ".join(blocked),
+            )
+            storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
+            raise SafetyBlockedError(run_id, blocked)
         return self._drive(
             run_id=run_id,
             root_prompt=prompt,
@@ -306,10 +346,15 @@ class RunService:
                 require_approval=require_approval,
             )
 
+            # Safety from the captured change set (names / diff stats only, no contents).
+            safety_warnings = safety.build_safety_warnings(changed_files=changed_files, diff_stat=diff_stat)
+            risky = safety.detect_risky_run(prompt, changed_files, diff_stat) is not None
+
             if result.exit_code != 0:
                 nxt = self.generator.generate(context)
                 step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.FAILED.value, nxt.prompt)
                 self._store_artifacts(run_id, step_id, git_payloads, result)
+                self._store_warnings(run_id, step_id, safety_warnings)
                 storage.update_run_status(
                     self.db_path, run_id, RunStatus.FAILED.value, finished_at=result.finished_at
                 )
@@ -322,6 +367,7 @@ class RunService:
             if loops_done >= max_loops:
                 step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.DONE.value, None)
                 self._store_artifacts(run_id, step_id, git_payloads, result)
+                self._store_warnings(run_id, step_id, safety_warnings)
                 storage.update_run_status(
                     self.db_path, run_id, RunStatus.DONE.value, finished_at=result.finished_at
                 )
@@ -333,14 +379,18 @@ class RunService:
             nxt = self.generator.generate(context)
             step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.DONE.value, nxt.prompt)
             self._store_artifacts(run_id, step_id, git_payloads, result)
+            self._store_warnings(run_id, step_id, safety_warnings)
 
-            if require_approval:
+            # A risky change (secret-like file or large diff) forces an approval gate even
+            # when require_approval is False.
+            if require_approval or risky:
                 approval_id = storage.create_approval(self.db_path, run_id, step_id, nxt.prompt)
                 storage.update_run_status(self.db_path, run_id, RunStatus.WAITING_APPROVAL.value)
+                message = "waiting for approval (risky change)" if risky and not require_approval else "waiting for approval"
                 return StepExecutionReport(
                     run_id=run_id, run_status=RunStatus.WAITING_APPROVAL.value, loop_index=loop_index,
                     provider=provider, step_id=step_id, exit_code=0, next_prompt=nxt.prompt,
-                    approval_id=approval_id, message="waiting for approval",
+                    approval_id=approval_id, message=message,
                 )
 
             # Auto-run: advance to the next step with the generated prompt.
@@ -363,6 +413,17 @@ class RunService:
                 run_id=run_id,
                 artifact_type=payload.type,
                 content=payload.content,
+                step_id=step_id,
+            )
+
+    def _store_warnings(self, run_id: int, step_id: int, warnings: List[str]) -> None:
+        """Persist any non-fatal safety warnings as artifacts for a step."""
+        for warning in warnings:
+            storage.create_artifact(
+                self.db_path,
+                run_id=run_id,
+                artifact_type=safety.SAFETY_WARNING_ARTIFACT,
+                content=warning,
                 step_id=step_id,
             )
 

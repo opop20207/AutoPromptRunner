@@ -330,5 +330,32 @@ class CodexProviderTests(_DbTestCase):
         self.assertEqual(storage.get_run(self.db, self._latest_run_id()).status, RunStatus.DONE.value)
 
 
+class SafetyCliTests(_DbTestCase):
+    def test_safety_check_blocker_exits_nonzero(self):
+        code, out, err = run_cli(["safety-check", "--prompt", "then run rm -rf / on the repo"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("blocked command pattern", out)
+
+    def test_safety_check_clean_exits_zero(self):
+        code, out, err = run_cli(["safety-check", "--prompt", "improve the README and add tests"])
+        self.assertEqual(code, 0)
+        self.assertIn("none", out)
+
+    def test_run_rejects_max_loops_above_hard_limit(self):
+        code, out, err = run_cli(["run", "--prompt", "p", "--max-loops", "9999", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("hard limit", err.lower())
+
+    def test_run_blocked_prompt_fails(self):
+        code, out, err = run_cli(
+            ["run", "--prompt", "please run rm -rf / now", "--max-loops", "1", "--db-path", self.db]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("blocked", err.lower())
+        run = storage.get_run(self.db, self._latest_run_id())
+        self.assertEqual(run.status, RunStatus.FAILED.value)
+        self.assertTrue(storage.list_artifacts_for_run(self.db, run.id, artifact_type="safety_blocker"))
+
+
 if __name__ == "__main__":
     unittest.main()

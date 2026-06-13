@@ -9,6 +9,7 @@ import { ChangedFilesPanel } from "./ChangedFilesPanel";
 import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
 import { LiveLogPanel } from "./LiveLogPanel";
+import { SafetyPanel } from "./SafetyPanel";
 import { StepList } from "./StepList";
 
 export function RunDetail({
@@ -90,6 +91,11 @@ export function RunDetail({
           <div className="subsection">
             <h3>Live log</h3>
             <LiveLogPanel runId={detail.id} runStatus={detail.status} onTerminal={onChanged} />
+          </div>
+
+          <div className="subsection">
+            <h3>Safety</h3>
+            <SafetyPanel artifacts={detail.artifacts} />
           </div>
 
           <div className="subsection">

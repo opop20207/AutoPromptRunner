@@ -127,6 +127,14 @@ class RunApiTests(unittest.TestCase):
     def test_run_logs_missing_run_returns_404(self):
         self.assertEqual(self.client.get("/runs/9999/logs").status_code, 404)
 
+    def test_create_run_blocked_prompt_returns_400(self):
+        resp = self.client.post("/runs", json={"prompt": "then run rm -rf / on the repo", "max_loops": 1})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_run_max_loops_above_hard_limit_returns_400(self):
+        resp = self.client.post("/runs", json={"prompt": "p", "max_loops": 9999})
+        self.assertEqual(resp.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
