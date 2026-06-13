@@ -37,7 +37,8 @@ class RunApiTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _run(self, prompt="Continue next task", max_loops=3, **extra):
-        body = {"prompt": prompt, "max_loops": max_loops}
+        # Default to synchronous execution; the API default is queued=True (see queued tests).
+        body = {"prompt": prompt, "max_loops": max_loops, "queued": False}
         body.update(extra)
         return self.client.post("/runs", json=body)
 
@@ -128,7 +129,9 @@ class RunApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/runs/9999/logs").status_code, 404)
 
     def test_create_run_blocked_prompt_returns_400(self):
-        resp = self.client.post("/runs", json={"prompt": "then run rm -rf / on the repo", "max_loops": 1})
+        resp = self.client.post(
+            "/runs", json={"prompt": "then run rm -rf / on the repo", "max_loops": 1, "queued": False}
+        )
         self.assertEqual(resp.status_code, 400)
 
     def test_create_run_max_loops_above_hard_limit_returns_400(self):
@@ -145,7 +148,9 @@ class RunApiTests(unittest.TestCase):
         os.makedirs(ws)
         locks.acquire_lock(self.db, ws, run_id=999, timeout_seconds=60)  # held by another run
         resp = self.client.post(
-            "/runs", json={"prompt": "p", "workspace": ws, "provider": "mock", "max_loops": 1, "require_approval": False}
+            "/runs",
+            json={"prompt": "p", "workspace": ws, "provider": "mock", "max_loops": 1,
+                  "require_approval": False, "queued": False},
         )
         self.assertEqual(resp.status_code, 409)
 
@@ -164,6 +169,42 @@ class RunApiTests(unittest.TestCase):
         run_id = self._run(workspace=ws, max_loops=3, require_approval=True).json()["id"]  # pauses at approval
         locks.acquire_lock(self.db, ws, run_id=999, timeout_seconds=60)  # another run grabs the workspace
         self.assertEqual(self.client.post(f"/runs/{run_id}/approve-next").status_code, 409)
+
+    def test_create_run_queued_creates_job(self):
+        resp = self.client.post("/runs", json={"prompt": "p", "max_loops": 1, "queued": True})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "CREATED")  # not executed yet
+        self.assertEqual(body["queue_status"], "QUEUED")
+        self.assertIsNotNone(body["queue_job_id"])
+        self.assertEqual(len(self.client.get(f"/runs/{body['id']}").json()["steps"]), 0)
+
+    def test_create_run_queued_is_default(self):
+        resp = self.client.post("/runs", json={"prompt": "p", "max_loops": 1})  # no queued field
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["queue_status"], "QUEUED")
+
+    def test_create_run_not_queued_executes_sync(self):
+        resp = self.client.post("/runs", json={"prompt": "p", "max_loops": 3, "queued": False})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "WAITING_APPROVAL")  # executed one step
+        self.assertIsNone(resp.json()["queue_status"])
+
+    def test_queue_list_endpoint(self):
+        self.client.post("/runs", json={"prompt": "p", "max_loops": 1, "queued": True})
+        resp = self.client.get("/queue")
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreaterEqual(len(resp.json()), 1)
+
+    def test_cancel_queued_job_endpoint(self):
+        run_id = self.client.post("/runs", json={"prompt": "p", "max_loops": 1, "queued": True}).json()["id"]
+        resp = self.client.post(f"/queue/{run_id}/cancel")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["cancelled"])
+        self.assertEqual(storage.get_job_by_run_id(self.db, run_id).status, "CANCELLED")
+
+    def test_cancel_missing_job_returns_404(self):
+        self.assertEqual(self.client.post("/queue/9999/cancel").status_code, 404)
 
 
 if __name__ == "__main__":

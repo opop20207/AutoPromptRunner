@@ -13,6 +13,7 @@ import type {
   RunDetail,
   RunLogs,
   RunSummary,
+  QueueJob,
   RunLock,
   Template,
   TemplateCreate,
@@ -115,6 +116,9 @@ export const api = {
   listLocks: () => request<RunLock[]>("/locks"),
   releaseLock: (runId: number) =>
     request<{ run_id: number; released: number }>(`/locks/${runId}/release`, { method: "POST" }),
+  listQueue: () => request<QueueJob[]>("/queue"),
+  cancelQueueJob: (runId: number) =>
+    request<{ run_id: number; cancelled: boolean }>(`/queue/${runId}/cancel`, { method: "POST" }),
 };
 
 export function errorMessage(err: unknown): string {

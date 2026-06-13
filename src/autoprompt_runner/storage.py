@@ -14,7 +14,17 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from .approvals import ApprovalStatus
-from .models import Approval, Artifact, Project, RunLock, StoredRun, StoredStep, Template, Worktree
+from .models import (
+    Approval,
+    Artifact,
+    Project,
+    QueueJob,
+    RunLock,
+    StoredRun,
+    StoredStep,
+    Template,
+    Worktree,
+)
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
 # Default database location, relative to the current working directory.
@@ -27,6 +37,15 @@ DEFAULT_PROJECT_KEY = "default_project_id"
 LOCK_ACTIVE = "ACTIVE"
 LOCK_RELEASED = "RELEASED"
 LOCK_EXPIRED = "EXPIRED"
+
+# Run-queue job statuses (mirrored as constants in autoprompt_runner.queue).
+QUEUE_QUEUED = "QUEUED"
+QUEUE_RUNNING = "RUNNING"
+QUEUE_DONE = "DONE"
+QUEUE_FAILED = "FAILED"
+QUEUE_CANCELLED = "CANCELLED"
+# Statuses for which a run may not be enqueued again (it already has an active job).
+_QUEUE_ACTIVE_STATUSES = (QUEUE_QUEUED, QUEUE_RUNNING)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -141,6 +160,22 @@ CREATE TABLE IF NOT EXISTS run_locks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_locks_workspace ON run_locks (workspace_path, status);
+
+CREATE TABLE IF NOT EXISTS run_queue (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 100,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    last_error TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_queue_status ON run_queue (status, priority, created_at);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1046,6 +1081,133 @@ def get_lock_for_run(db_path: str, run_id: int) -> Optional[RunLock]:
         conn.close()
 
 
+# -- run queue ---------------------------------------------------------------
+
+
+def enqueue_run(db_path: str, run_id: int, priority: int = 100, max_attempts: int = 1) -> int:
+    """Insert a QUEUED job for ``run_id`` and return its id.
+
+    Raises ``ValueError`` if the run already has an active (QUEUED/RUNNING) job, so a run
+    can never have multiple active queue jobs.
+    """
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        existing = conn.execute(
+            "SELECT id FROM run_queue WHERE run_id = ? AND status IN (?, ?)",
+            (int(run_id), QUEUE_QUEUED, QUEUE_RUNNING),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError(f"run {run_id} already has an active queue job")
+        cur = conn.execute(
+            "INSERT INTO run_queue (run_id, status, priority, attempts, max_attempts, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (int(run_id), QUEUE_QUEUED, int(priority), 0, int(max_attempts), _utcnow_iso()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def get_next_queued_job(db_path: str) -> Optional[QueueJob]:
+    """Return the next job to run: lowest priority number, then oldest, or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM run_queue WHERE status = ? ORDER BY priority ASC, created_at ASC, id ASC LIMIT 1",
+            (QUEUE_QUEUED,),
+        ).fetchone()
+        return _row_to_queue_job(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def mark_job_running(db_path: str, job_id: int) -> None:
+    """Mark a job RUNNING, stamp ``started_at``, and increment ``attempts``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE run_queue SET status = ?, started_at = ?, attempts = attempts + 1 WHERE id = ?",
+            (QUEUE_RUNNING, _utcnow_iso(), int(job_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_job_done(db_path: str, job_id: int) -> None:
+    """Mark a job DONE and stamp ``finished_at``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE run_queue SET status = ?, finished_at = ? WHERE id = ?",
+            (QUEUE_DONE, _utcnow_iso(), int(job_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_job_failed(db_path: str, job_id: int, last_error: Optional[str] = None) -> None:
+    """Mark a job FAILED, stamp ``finished_at``, and record ``last_error``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE run_queue SET status = ?, finished_at = ?, last_error = ? WHERE id = ?",
+            (QUEUE_FAILED, _utcnow_iso(), last_error, int(job_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def cancel_job(db_path: str, run_id: int) -> int:
+    """Cancel the QUEUED job for ``run_id`` (RUNNING jobs are left untouched).
+
+    Returns how many jobs were cancelled (0 when there is no queued job for the run).
+    """
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "UPDATE run_queue SET status = ?, finished_at = ? WHERE run_id = ? AND status = ?",
+            (QUEUE_CANCELLED, _utcnow_iso(), int(run_id), QUEUE_QUEUED),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def get_job_by_run_id(db_path: str, run_id: int) -> Optional[QueueJob]:
+    """Return the most recent queue job for ``run_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM run_queue WHERE run_id = ? ORDER BY id DESC LIMIT 1", (int(run_id),)
+        ).fetchone()
+        return _row_to_queue_job(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_queue(db_path: str, limit: int = 50) -> List[QueueJob]:
+    """Return up to ``limit`` queue jobs, newest first."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM run_queue ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+        return [_row_to_queue_job(row) for row in rows]
+    finally:
+        conn.close()
+
+
 # -- run logs (for polling) --------------------------------------------------
 
 _LOG_TAIL_LIMIT = 4000
@@ -1224,4 +1386,19 @@ def _row_to_run_lock(row: sqlite3.Row) -> RunLock:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         expires_at=_opt(row, "expires_at"),
+    )
+
+
+def _row_to_queue_job(row: sqlite3.Row) -> QueueJob:
+    return QueueJob(
+        id=row["id"],
+        run_id=row["run_id"],
+        status=row["status"],
+        priority=row["priority"],
+        attempts=row["attempts"],
+        max_attempts=row["max_attempts"],
+        created_at=row["created_at"],
+        started_at=_opt(row, "started_at"),
+        finished_at=_opt(row, "finished_at"),
+        last_error=_opt(row, "last_error"),
     )

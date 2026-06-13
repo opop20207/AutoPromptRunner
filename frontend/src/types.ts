@@ -66,6 +66,8 @@ export interface RunSummary {
   exit_code?: number | null;
   message?: string | null;
   warnings?: string[];
+  queue_status?: string | null;
+  queue_job_id?: number | null;
 }
 
 export interface RunCreate {
@@ -81,6 +83,7 @@ export interface RunCreate {
   require_approval: boolean;
   timeout_seconds?: number | null;
   show_next_prompt: boolean;
+  queued?: boolean;
 }
 
 export interface Template {
@@ -152,6 +155,21 @@ export interface RunLock {
   expires_at?: string | null;
 }
 
+export type QueueStatus = "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "CANCELLED";
+
+export interface QueueJob {
+  id: number;
+  run_id: number;
+  status: QueueStatus;
+  priority: number;
+  attempts: number;
+  max_attempts: number;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  last_error?: string | null;
+}
+
 export interface Step {
   id: number;
   loop_index: number;
@@ -218,4 +236,6 @@ export interface RunDetail {
   steps: Step[];
   pending_approval: Approval | null;
   artifacts: ArtifactSummary[];
+  queue_status?: string | null;
+  queue_job_id?: number | null;
 }

@@ -10,6 +10,7 @@ import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
 import { LiveLogPanel } from "./LiveLogPanel";
 import { LockPanel } from "./LockPanel";
+import { QueuePanel } from "./QueuePanel";
 import { SafetyPanel } from "./SafetyPanel";
 import { StepList } from "./StepList";
 
@@ -74,6 +75,8 @@ export function RunDetail({
               <dd>#{detail.id}</dd>
               <dt>Status</dt>
               <dd className="status">{detail.status}</dd>
+              <dt>Queue</dt>
+              <dd>{detail.queue_status ?? "(not queued)"}</dd>
               <dt>Provider</dt>
               <dd>{detail.provider}</dd>
               <dt>Workspace</dt>
@@ -102,6 +105,11 @@ export function RunDetail({
           <div className="subsection">
             <h3>Locks</h3>
             <LockPanel runId={detail.id} refreshKey={artifactRefresh} />
+          </div>
+
+          <div className="subsection">
+            <h3>Queue</h3>
+            <QueuePanel runId={detail.id} refreshKey={artifactRefresh} />
           </div>
 
           <div className="subsection">

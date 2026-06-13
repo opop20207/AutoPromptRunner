@@ -47,6 +47,7 @@ class RunCreateRequest(BaseModel):
     require_approval: bool = True
     timeout_seconds: Optional[int] = None
     show_next_prompt: bool = False
+    queued: bool = True  # API default: create + enqueue for a background worker
 
 
 class RunSummaryResponse(BaseModel):
@@ -61,6 +62,8 @@ class RunSummaryResponse(BaseModel):
     exit_code: Optional[int] = None
     message: Optional[str] = None
     warnings: List[str] = []
+    queue_status: Optional[str] = None
+    queue_job_id: Optional[int] = None
 
 
 class StepResponse(BaseModel):
@@ -108,6 +111,8 @@ class RunDetailResponse(BaseModel):
     steps: List[StepResponse] = []
     pending_approval: Optional[ApprovalResponse] = None
     artifacts: List[ArtifactSummaryResponse] = []
+    queue_status: Optional[str] = None
+    queue_job_id: Optional[int] = None
 
 
 class ArtifactDetailResponse(BaseModel):

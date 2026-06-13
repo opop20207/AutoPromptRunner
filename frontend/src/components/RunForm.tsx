@@ -40,6 +40,8 @@ export function RunForm({
   const [requireApproval, setRequireApproval] = useState(true);
   const [timeoutSeconds, setTimeoutSeconds] = useState("");
   const [showNextPrompt, setShowNextPrompt] = useState(false);
+  const [queued, setQueued] = useState(true); // default to queued for the web UI
+  const [notice, setNotice] = useState<string | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [preview, setPreview] = useState<string | null>(null);
@@ -106,6 +108,7 @@ export function RunForm({
     event.preventDefault();
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const created = await api.createRun({
         prompt: usingTemplate ? null : prompt,
@@ -120,8 +123,13 @@ export function RunForm({
         require_approval: requireApproval,
         timeout_seconds: timeoutSeconds ? Number(timeoutSeconds) : null,
         show_next_prompt: showNextPrompt,
+        queued,
       });
       setPrompt("");
+      if (created.queue_status === "QUEUED") {
+        const job = created.queue_job_id ? ` (job ${created.queue_job_id})` : "";
+        setNotice(`Queued run #${created.id}${job}. Start a worker to execute it.`);
+      }
       onCreated(created.id);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -244,9 +252,14 @@ export function RunForm({
           />
           Show full next prompt
         </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={queued} onChange={(e) => setQueued(e.target.checked)} />
+          Queue run (a background worker executes it)
+        </label>
         {error && <p className="error">{error}</p>}
+        {notice && <p className="muted">{notice}</p>}
         <button type="submit" className="primary" disabled={busy}>
-          {busy ? "Starting…" : "Start run"}
+          {busy ? "Submitting…" : queued ? "Queue run" : "Start run"}
         </button>
       </form>
     </Section>

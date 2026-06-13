@@ -301,5 +301,46 @@ class WorkspaceLockTests(unittest.TestCase):
         self.assertEqual(len(storage.list_locks(self.db)), 0)
 
 
+class QueueExecutionTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+        self.svc = RunService(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_create_run_only_does_not_execute(self):
+        run_id = self.svc.create_run_only("p", "mock", 1, require_approval=False)
+        self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.CREATED.value)
+        self.assertEqual(len(storage.get_steps_for_run(self.db, run_id)), 0)
+
+    def test_execute_queued_run_runs_it(self):
+        run_id = self.svc.create_run_only("p", "mock", 1, require_approval=False)
+        report = self.svc.execute_queued_run(run_id)
+        self.assertEqual(report.run_status, RunStatus.DONE.value)
+        self.assertEqual(len(storage.get_steps_for_run(self.db, run_id)), 1)
+
+    def test_create_and_execute_run_matches_start(self):
+        report = self.svc.create_and_execute_run("p", "mock", 1, require_approval=False)
+        self.assertEqual(report.run_status, RunStatus.DONE.value)
+
+    def test_execute_terminal_run_rejected(self):
+        run_id = self.svc.create_run_only("p", "mock", 1, require_approval=False)
+        self.svc.execute_queued_run(run_id)  # -> DONE
+        with self.assertRaises(RunServiceError):
+            self.svc.execute_queued_run(run_id)  # already terminal
+
+    def test_queued_execution_still_acquires_lock(self):
+        ws = os.path.join(self._tmp.name, "ws")
+        os.makedirs(ws)
+        locks.acquire_lock(self.db, ws, run_id=999, timeout_seconds=60)  # workspace held by another run
+        run_id = self.svc.create_run_only("p", "mock", 1, require_approval=False, workspace=ws)
+        with self.assertRaises(WorkspaceLockedError):
+            self.svc.execute_queued_run(run_id)
+        self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.FAILED.value)
+
+
 if __name__ == "__main__":
     unittest.main()

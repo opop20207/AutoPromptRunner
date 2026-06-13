@@ -102,7 +102,9 @@ class RunWithWorktreeApiTests(_WtApiBase):
     def test_run_uses_worktree_workspace(self):
         self._create()
         resp = self.client.post(
-            "/runs", json={"prompt": "p", "worktree": "ui-session", "max_loops": 1, "require_approval": False}
+            "/runs",
+            json={"prompt": "p", "worktree": "ui-session", "max_loops": 1,
+                  "require_approval": False, "queued": False},
         )
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(resp.json()["status"], "DONE")

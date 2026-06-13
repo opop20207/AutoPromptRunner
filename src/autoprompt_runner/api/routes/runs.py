@@ -7,8 +7,8 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from ... import locks, safety, storage
-from ...models import Approval, Artifact, RunLock, StepExecutionReport, StoredRun, StoredStep
+from ... import locks, queue, safety, storage
+from ...models import Approval, Artifact, QueueJob, RunLock, StepExecutionReport, StoredRun, StoredStep
 from ...services.run_service import RunInputError, RunService, RunServiceError, resolve_run_inputs
 from ..dependencies import get_db_path
 from ..schemas import (
@@ -59,6 +59,35 @@ def _lock_response(lock: RunLock) -> LockResponse:
     )
 
 
+class QueueJobResponse(BaseModel):
+    id: int
+    run_id: int
+    status: str
+    priority: int
+    attempts: int
+    max_attempts: int
+    created_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+def _queue_response(job: QueueJob) -> QueueJobResponse:
+    return QueueJobResponse(
+        id=job.id, run_id=job.run_id, status=job.status, priority=job.priority,
+        attempts=job.attempts, max_attempts=job.max_attempts, created_at=job.created_at,
+        started_at=job.started_at, finished_at=job.finished_at, last_error=job.last_error,
+    )
+
+
+def _queue_fields(db_path: str, run_id: int) -> tuple:
+    """Return ``(queue_status, queue_job_id)`` for a run, or ``(None, None)`` if not queued."""
+    job = storage.get_job_by_run_id(db_path, run_id)
+    if job is None:
+        return None, None
+    return job.status, job.id
+
+
 def _short(text: Optional[str], limit: int = _PREVIEW_LIMIT) -> str:
     collapsed = " ".join((text or "").split())
     if len(collapsed) <= limit:
@@ -66,10 +95,12 @@ def _short(text: Optional[str], limit: int = _PREVIEW_LIMIT) -> str:
     return collapsed[: max(0, limit - 3)] + "..."
 
 
-def _run_summary(run: StoredRun) -> RunSummaryResponse:
+def _run_summary(db_path: str, run: StoredRun) -> RunSummaryResponse:
+    queue_status, queue_job_id = _queue_fields(db_path, run.id)
     return RunSummaryResponse(
         id=run.id, status=run.status, provider=run.provider,
         created_at=run.created_at, prompt=run.root_prompt,
+        queue_status=queue_status, queue_job_id=queue_job_id,
     )
 
 
@@ -95,6 +126,8 @@ def _summary_from_report(db_path: str, report: StepExecutionReport, show_next_pr
                 db_path, report.run_id, artifact_type=safety.SAFETY_WARNING_ARTIFACT
             )
         ],
+        queue_status=_queue_fields(db_path, report.run_id)[0],
+        queue_job_id=_queue_fields(db_path, report.run_id)[1],
     )
 
 
@@ -147,8 +180,26 @@ def create_run(body: RunCreateRequest, db_path: str = Depends(get_db_path)) -> R
         )
     except RunInputError as exc:
         raise HTTPException(status_code=404 if exc.kind == "not_found" else 400, detail=str(exc))
+
+    service = RunService(db_path)
+    if body.queued:
+        # Create the run quickly and enqueue it for a background worker; return at once.
+        try:
+            run_id = service.create_run_only(
+                prompt=prompt,
+                provider=settings.provider,
+                max_loops=settings.max_loops,
+                require_approval=settings.require_approval,
+                workspace=settings.workspace,
+                timeout_seconds=settings.timeout_seconds,
+            )
+            queue.enqueue(db_path, run_id)
+        except (RunServiceError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return _run_summary(db_path, storage.get_run(db_path, run_id))
+
     try:
-        report = RunService(db_path).start(
+        report = service.create_and_execute_run(
             prompt=prompt,
             provider=settings.provider,
             max_loops=settings.max_loops,
@@ -163,7 +214,7 @@ def create_run(body: RunCreateRequest, db_path: str = Depends(get_db_path)) -> R
 
 @router.get("/runs", response_model=List[RunSummaryResponse])
 def list_runs(limit: int = 20, db_path: str = Depends(get_db_path)) -> List[RunSummaryResponse]:
-    return [_run_summary(run) for run in storage.list_runs(db_path, limit=limit)]
+    return [_run_summary(db_path, run) for run in storage.list_runs(db_path, limit=limit)]
 
 
 @router.get("/runs/{run_id}", response_model=RunDetailResponse)
@@ -174,6 +225,7 @@ def get_run(run_id: int, db_path: str = Depends(get_db_path)) -> RunDetailRespon
     steps = storage.get_steps_for_run(db_path, run_id)
     pending = storage.get_pending_approval(db_path, run_id)
     run_artifacts = storage.list_artifacts_for_run(db_path, run_id)
+    queue_status, queue_job_id = _queue_fields(db_path, run_id)
     return RunDetailResponse(
         id=run.id, status=run.status, provider=run.provider, workspace=run.workspace,
         prompt=run.root_prompt, max_loops=run.max_loops, require_approval=run.require_approval,
@@ -181,6 +233,7 @@ def get_run(run_id: int, db_path: str = Depends(get_db_path)) -> RunDetailRespon
         steps=[_step_response(step) for step in steps],
         pending_approval=_approval_response(pending) if pending is not None else None,
         artifacts=[_artifact_summary(artifact) for artifact in run_artifacts],
+        queue_status=queue_status, queue_job_id=queue_job_id,
     )
 
 
@@ -244,3 +297,23 @@ def list_locks(db_path: str = Depends(get_db_path)) -> List[LockResponse]:
 def release_lock(run_id: int, db_path: str = Depends(get_db_path)) -> Dict[str, object]:
     released = locks.release_lock(db_path, run_id)
     return {"run_id": run_id, "released": released}
+
+
+@router.get("/queue", response_model=List[QueueJobResponse])
+def list_queue(db_path: str = Depends(get_db_path)) -> List[QueueJobResponse]:
+    return [_queue_response(job) for job in storage.list_queue(db_path)]
+
+
+@router.post("/queue/{run_id}/cancel")
+def cancel_queue_job(run_id: int, db_path: str = Depends(get_db_path)) -> Dict[str, object]:
+    result = queue.cancel(db_path, run_id)
+    if result == queue.CANCEL_CANCELLED:
+        return {"run_id": run_id, "cancelled": True}
+    if result == queue.CANCEL_RUNNING:
+        raise HTTPException(
+            status_code=409,
+            detail=f"run {run_id} job is already running; process cancellation is not implemented yet",
+        )
+    if result == queue.CANCEL_NOT_FOUND:
+        raise HTTPException(status_code=404, detail=f"no queue job for run {run_id}")
+    raise HTTPException(status_code=400, detail=f"run {run_id} job is not cancellable (already finished)")

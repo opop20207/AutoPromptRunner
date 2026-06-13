@@ -136,6 +136,29 @@ class RunLock:
 
 
 @dataclass
+class QueueJob:
+    """A queued run job, persisted in ``run_queue``.
+
+    Lets the API create a run quickly and have a local background worker execute it later
+    (Claude Code / Codex runs can be slow). ``status`` is ``QUEUED`` / ``RUNNING`` /
+    ``DONE`` / ``FAILED`` / ``CANCELLED`` (see ``autoprompt_runner.queue``). Lower
+    ``priority`` numbers run first; ties break by ``created_at``. ``attempts`` is bounded
+    by ``max_attempts`` (no automatic retry beyond it).
+    """
+
+    id: int
+    run_id: int
+    status: str
+    priority: int
+    attempts: int
+    max_attempts: int
+    created_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

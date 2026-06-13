@@ -255,6 +255,106 @@ class RunService:
 
     # -- public API -----------------------------------------------------------
 
+    def create_run_only(
+        self,
+        prompt: str,
+        provider: str,
+        max_loops: int,
+        require_approval: bool = True,
+        workspace: Optional[str] = None,
+        timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+    ) -> int:
+        """Create a run row (status CREATED) without executing it. Returns the run id.
+
+        Used for queued runs: the API/CLI create the run quickly and enqueue it, and a
+        worker later calls :meth:`execute_queued_run`. Basic input limits are validated
+        here; the prompt safety scan and workspace lock are applied at execution time.
+        """
+        if provider not in self.providers:
+            raise RunServiceError(f"unsupported provider: {provider}")
+        safety.validate_max_loops(max_loops)  # hard-limit backstop (CLI/API validate earlier)
+        safety.validate_timeout_seconds(timeout_seconds)
+        return storage.create_run(
+            self.db_path,
+            root_prompt=prompt,
+            provider=provider,
+            max_loops=max_loops,
+            require_approval=require_approval,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def execute_run_step(self, run_id: int) -> StepExecutionReport:
+        """Execute a created/queued run: safety scan, acquire the lock, drive the loop.
+
+        Applies the same prompt safety scan (Prompt#14), workspace lock (Prompt#17), Git
+        artifact capture (Prompt#7), and prompt-loop/approval policy as the synchronous
+        path. The lock is released once the run is terminal or pauses at WAITING_APPROVAL.
+        """
+        run = storage.get_run(self.db_path, run_id)
+        if run is None:
+            raise RunServiceError(f"run {run_id} not found", kind="not_found")
+        if run.status not in (RunStatus.CREATED.value, RunStatus.RUNNING.value):
+            raise RunServiceError(f"run {run_id} is {run.status}; cannot execute", kind="terminal")
+
+        timeout_seconds = run.timeout_seconds if run.timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS
+        storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
+        blocked = safety.scan_prompt_for_blocked_commands(run.root_prompt)
+        if blocked:
+            storage.create_artifact(
+                self.db_path, run_id=run_id, artifact_type=safety.SAFETY_BLOCKER_ARTIFACT,
+                content="blocked command pattern(s): " + ", ".join(blocked),
+            )
+            storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
+            raise SafetyBlockedError(run_id, blocked)
+
+        # Acquire the workspace lock before any runner execution (no-op without a workspace).
+        try:
+            locks.acquire_lock(self.db_path, run.workspace, run_id, timeout_seconds=timeout_seconds)
+        except locks.LockConflictError as exc:
+            storage.create_artifact(
+                self.db_path, run_id=run_id, artifact_type=locks.LOCK_BLOCKER_ARTIFACT, content=str(exc),
+            )
+            storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
+            raise WorkspaceLockedError(run_id, exc.workspace_path, exc.holder_run_id) from exc
+
+        try:
+            loop_index = len(storage.get_steps_for_run(self.db_path, run_id))
+            return self._drive(
+                run_id=run_id,
+                root_prompt=run.root_prompt,
+                provider=run.provider,
+                max_loops=run.max_loops,
+                require_approval=run.require_approval,
+                loop_index=loop_index,
+                prompt=run.root_prompt,
+                workspace=run.workspace,
+                timeout_seconds=timeout_seconds,
+            )
+        finally:
+            # Release once execution pauses (WAITING_APPROVAL) or the run is terminal.
+            self._release_workspace_lock(run_id, run.workspace)
+
+    def execute_queued_run(self, run_id: int) -> StepExecutionReport:
+        """Worker entry point: execute a previously created and queued run."""
+        return self.execute_run_step(run_id)
+
+    def create_and_execute_run(
+        self,
+        prompt: str,
+        provider: str,
+        max_loops: int,
+        require_approval: bool = True,
+        workspace: Optional[str] = None,
+        timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+    ) -> StepExecutionReport:
+        """Create a run and execute it immediately (the synchronous CLI/API path)."""
+        run_id = self.create_run_only(
+            prompt, provider, max_loops, require_approval=require_approval,
+            workspace=workspace, timeout_seconds=timeout_seconds,
+        )
+        return self.execute_run_step(run_id)
+
     def start(
         self,
         prompt: str,
@@ -264,57 +364,11 @@ class RunService:
         workspace: Optional[str] = None,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     ) -> StepExecutionReport:
-        """Create a run and execute it according to the loop policy."""
-        if provider not in self.providers:
-            raise RunServiceError(f"unsupported provider: {provider}")
-        safety.validate_max_loops(max_loops)  # hard-limit backstop (CLI/API validate earlier)
-        safety.validate_timeout_seconds(timeout_seconds)
-        run_id = storage.create_run(
-            self.db_path,
-            root_prompt=prompt,
-            provider=provider,
-            max_loops=max_loops,
-            require_approval=require_approval,
-            workspace=workspace,
-            timeout_seconds=timeout_seconds,
+        """Backward-compatible alias for :meth:`create_and_execute_run`."""
+        return self.create_and_execute_run(
+            prompt, provider, max_loops, require_approval=require_approval,
+            workspace=workspace, timeout_seconds=timeout_seconds,
         )
-        storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
-        blocked = safety.scan_prompt_for_blocked_commands(prompt)
-        if blocked:
-            storage.create_artifact(
-                self.db_path,
-                run_id=run_id,
-                artifact_type=safety.SAFETY_BLOCKER_ARTIFACT,
-                content="blocked command pattern(s): " + ", ".join(blocked),
-            )
-            storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
-            raise SafetyBlockedError(run_id, blocked)
-
-        # Acquire the workspace lock before any runner execution (no-op without a workspace).
-        try:
-            locks.acquire_lock(self.db_path, workspace, run_id, timeout_seconds=timeout_seconds)
-        except locks.LockConflictError as exc:
-            storage.create_artifact(
-                self.db_path, run_id=run_id, artifact_type=locks.LOCK_BLOCKER_ARTIFACT, content=str(exc),
-            )
-            storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
-            raise WorkspaceLockedError(run_id, exc.workspace_path, exc.holder_run_id) from exc
-
-        try:
-            return self._drive(
-                run_id=run_id,
-                root_prompt=prompt,
-                provider=provider,
-                max_loops=max_loops,
-                require_approval=require_approval,
-                loop_index=0,
-                prompt=prompt,
-                workspace=workspace,
-                timeout_seconds=timeout_seconds,
-            )
-        finally:
-            # Release once execution pauses (WAITING_APPROVAL) or the run is terminal.
-            self._release_workspace_lock(run_id, workspace)
 
     def approve_and_continue(self, run_id: int) -> StepExecutionReport:
         """Approve the pending approval and execute the approved next prompt."""

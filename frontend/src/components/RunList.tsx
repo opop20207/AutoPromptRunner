@@ -58,6 +58,7 @@ export function RunList({
             <tr>
               <th>ID</th>
               <th>Status</th>
+              <th>Queue</th>
               <th>Provider</th>
               <th>Created</th>
               <th>Prompt</th>
@@ -70,6 +71,7 @@ export function RunList({
                 <td>
                   <span className={statusClass(run.status)}>{run.status}</span>
                 </td>
+                <td>{run.queue_status ? <span className="status">{run.queue_status}</span> : "—"}</td>
                 <td>{run.provider}</td>
                 <td className="mono">{run.created_at}</td>
                 <td>{shorten(run.prompt)}</td>

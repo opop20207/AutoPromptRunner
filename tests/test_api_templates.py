@@ -85,6 +85,7 @@ class RunFromTemplateApiTests(_ApiTestCase):
                 "goal": "Fix failing placement preview tests",
                 "max_loops": 1,
                 "require_approval": False,
+                "queued": False,
             },
         )
         self.assertEqual(resp.status_code, 200)

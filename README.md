@@ -336,6 +336,69 @@ warning when the backend returns `409`.
 > [Git worktree](#parallel-sessions-with-git-worktrees) (a separate branch and directory)
 > rather than sharing one working tree.
 
+## Run queue and background worker
+
+Claude Code and Codex runs can take a long time, so the API does not have to execute a run
+inside the HTTP request. Instead it can **queue** the run and return immediately; a local
+**background worker** then claims and executes queued jobs one at a time. This is a local
+SQLite-backed queue for a single machine -- **not a distributed queue** or message broker.
+
+A queue job tracks a run's execution (`id`, `run_id`, `status` of `QUEUED` / `RUNNING` /
+`DONE` / `FAILED` / `CANCELLED`, `priority`, `attempts` / `max_attempts`, timestamps,
+`last_error`). Lower priority numbers run first; ties break by oldest first. A run can have
+only one active job at a time, and there is no automatic retry beyond `max_attempts`.
+
+The worker executes through the same `RunService` path as a synchronous run, so the safety
+checks, workspace locks, Git artifact capture, and prompt generation all still apply -- and
+because it runs one job at a time and respects the workspace lock, queued runs for the same
+workspace are serialized safely.
+
+**Worker** (run it in its own terminal):
+
+```
+python -m autoprompt_runner.cli worker run                      # poll every 2s, Ctrl+C to stop
+python -m autoprompt_runner.cli worker run --once               # execute one queued job, then exit
+python -m autoprompt_runner.cli worker run --poll-interval-seconds 5
+```
+
+**Queued CLI run** -- create and enqueue without executing (prints the run id and job id):
+
+```
+python -m autoprompt_runner.cli run --project FactoryColony --prompt "Continue next task" --queued
+python -m autoprompt_runner.cli queue list
+python -m autoprompt_runner.cli queue cancel --run-id 12
+```
+
+`queue cancel` cancels a job only while it is still `QUEUED`; once a worker has started it
+(`RUNNING`) the command returns a clean error -- **killing an in-progress process is not
+implemented yet**.
+
+**API.** `POST /runs` accepts a `queued` boolean (**default `true` for the API**): when
+queued it creates the run, enqueues a job, and returns quickly with the run id and
+`queue_status` / `queue_job_id`; with `queued=false` it keeps the existing synchronous
+behavior. `GET /queue` lists jobs, `POST /queue/{run_id}/cancel` cancels a queued job
+(`409` if it is already running), and `GET /runs/{id}` includes the run's queue status.
+
+```
+curl -X POST http://127.0.0.1:8000/runs \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Continue next task","project":"FactoryColony","queued":true}'
+curl http://127.0.0.1:8000/queue
+curl -X POST http://127.0.0.1:8000/queue/12/cancel
+```
+
+In the **web UI**, *New Run* has a "Queue run" checkbox (checked by default) and shows the
+queued status after submitting; *Runs* shows a queue column; and the run detail has a
+*Queue* panel (with *Cancel* for queued jobs and a note that running jobs cannot be killed
+yet).
+
+**Recommended local dev workflow** (four terminals):
+
+1. start the API: `python -m uvicorn autoprompt_runner.api.app:app --reload`
+2. start the frontend: `cd frontend && npm run dev`
+3. start the worker: `python -m autoprompt_runner.cli worker run`
+4. create a **queued** run from the web UI and watch the worker execute it.
+
 ## Git artifact capture
 
 When a run's workspace is a Git repository, each step records read-only Git artifacts:

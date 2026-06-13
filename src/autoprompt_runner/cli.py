@@ -10,6 +10,8 @@ CLI-first entry point (see PROJECT.md). Commands:
 * ``worktree``       -- manage isolated Git worktrees for parallel sessions (create /
   list / show / archive / remove).
 * ``locks``          -- list or manually release workspace execution locks.
+* ``queue``          -- list or cancel queued run jobs.
+* ``worker``         -- run the local background queue worker (executes queued runs).
 * ``run``            -- start a run; execute the first step, generate the next prompt,
   and pause at a pending approval (default) or auto-run up to ``--max-loops``.
 * ``approve-next``   -- approve a run's pending next prompt and execute it.
@@ -32,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, locks, safety, storage, templates, worktrees
+from . import __version__, locks, queue, safety, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -86,6 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_template_commands(subparsers)
     _add_worktree_commands(subparsers)
     _add_locks_commands(subparsers)
+    _add_queue_commands(subparsers)
+    _add_worker_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -136,6 +140,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--show-next-prompt", dest="show_next_prompt", action="store_true",
         help="Print the full generated next prompt instead of only a compact preview.",
+    )
+    run_parser.add_argument(
+        "--queued", dest="queued", action="store_true",
+        help="Create and enqueue the run for a background worker instead of running it now.",
     )
     _add_db_path(run_parser)
 
@@ -298,6 +306,32 @@ def _add_locks_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     release_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id whose lock to release.")
     _add_db_path(release_parser)
+
+
+def _add_queue_commands(subparsers: argparse._SubParsersAction) -> None:
+    queue_parser = subparsers.add_parser("queue", help="List or cancel queued run jobs.")
+    queue_sub = queue_parser.add_subparsers(dest="queue_command", metavar="subcommand")
+
+    list_parser = queue_sub.add_parser("list", help="List queued/running/recent jobs.")
+    list_parser.add_argument("--limit", type=int, default=50, help="Maximum number of jobs to show.")
+    _add_db_path(list_parser)
+
+    cancel_parser = queue_sub.add_parser("cancel", help="Cancel a queued job (running jobs cannot be killed yet).")
+    cancel_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id whose job to cancel.")
+    _add_db_path(cancel_parser)
+
+
+def _add_worker_commands(subparsers: argparse._SubParsersAction) -> None:
+    worker_parser = subparsers.add_parser("worker", help="Run the local background queue worker.")
+    worker_sub = worker_parser.add_subparsers(dest="worker_command", metavar="subcommand")
+
+    run_parser = worker_sub.add_parser("run", help="Start the queue worker loop (Ctrl+C to stop).")
+    run_parser.add_argument("--once", dest="once", action="store_true", help="Execute one job if available, then exit.")
+    run_parser.add_argument(
+        "--poll-interval-seconds", dest="poll_interval_seconds", type=float, default=2.0,
+        help="Seconds to wait between polls when the queue is empty (default 2).",
+    )
+    _add_db_path(run_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -734,6 +768,77 @@ def _dispatch_locks(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- queue + worker commands -------------------------------------------------
+
+
+def cmd_queue_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    jobs = storage.list_queue(db_path, limit=args.limit)
+    if not jobs:
+        print("No queue jobs.")
+        return EXIT_OK
+    print(f"{'JOB':>4}  {'RUN':>5}  {'STATUS':<10}  {'PRIO':>4}  {'ATTEMPTS':<9}  {'CREATED_AT':<32}  ERROR")
+    for job in jobs:
+        attempts = f"{job.attempts}/{job.max_attempts}"
+        error = _shorten(job.last_error, 40) if job.last_error else ""
+        print(
+            f"{job.id:>4}  {job.run_id:>5}  {job.status:<10}  {job.priority:>4}  {attempts:<9}  "
+            f"{(job.created_at or ''):<32}  {error}"
+        )
+    return EXIT_OK
+
+
+def cmd_queue_cancel(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    result = queue.cancel(db_path, args.run_id)
+    if result == queue.CANCEL_CANCELLED:
+        print(f"Cancelled queued job for run {args.run_id}.")
+        return EXIT_OK
+    if result == queue.CANCEL_RUNNING:
+        print(
+            f"error: run {args.run_id} job is already running; process cancellation is not implemented yet",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if result == queue.CANCEL_NOT_FOUND:
+        print(f"error: no queue job for run {args.run_id}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    print(f"error: run {args.run_id} job is not cancellable (already finished)", file=sys.stderr)
+    return EXIT_USAGE
+
+
+def _dispatch_queue(args: argparse.Namespace) -> int:
+    handlers = {"list": cmd_queue_list, "cancel": cmd_queue_cancel}
+    handler = handlers.get(getattr(args, "queue_command", None))
+    if handler is None:
+        print("error: queue requires a subcommand: list, cancel", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
+def cmd_worker_run(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    local_worker = worker.LocalWorker(db_path, poll_interval_seconds=args.poll_interval_seconds)
+    if args.once:
+        executed = local_worker.run_once()
+        print("worker: executed one job." if executed else "worker: no queued jobs.")
+        return EXIT_OK
+    print(f"worker: polling every {args.poll_interval_seconds}s (Ctrl+C to stop)...")
+    try:
+        local_worker.run_forever()
+    except KeyboardInterrupt:
+        local_worker.stop()
+        print("\nworker: stopped.")
+    return EXIT_OK
+
+
+def _dispatch_worker(args: argparse.Namespace) -> int:
+    if getattr(args, "worker_command", None) == "run":
+        return cmd_worker_run(args)
+    print("error: worker requires a subcommand: run", file=sys.stderr)
+    return EXIT_USAGE
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -758,8 +863,25 @@ def cmd_run(args: argparse.Namespace) -> int:
         return EXIT_NOT_FOUND if exc.kind == "not_found" else EXIT_USAGE
 
     service = RunService(args.db_path)
+    if args.queued:
+        try:
+            run_id = service.create_run_only(
+                prompt=prompt,
+                provider=settings.provider,
+                max_loops=settings.max_loops,
+                require_approval=settings.require_approval,
+                workspace=settings.workspace,
+                timeout_seconds=settings.timeout_seconds,
+            )
+            job_id = queue.enqueue(args.db_path, run_id)
+        except (RunServiceError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"Queued run {run_id} as job {job_id}. Run a worker to execute it: worker run")
+        return EXIT_OK
+
     try:
-        report = service.start(
+        report = service.create_and_execute_run(
             prompt=prompt,
             provider=settings.provider,
             max_loops=settings.max_loops,
@@ -994,6 +1116,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_worktree(args)
     if args.command == "locks":
         return _dispatch_locks(args)
+    if args.command == "queue":
+        return _dispatch_queue(args)
+    if args.command == "worker":
+        return _dispatch_worker(args)
     if args.command == "run":
         return cmd_run(args)
     if args.command == "approve-next":

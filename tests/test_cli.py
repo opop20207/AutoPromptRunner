@@ -586,5 +586,59 @@ class LocksCliTests(unittest.TestCase):
         self.assertIn("locked", err.lower())
 
 
+class QueueWorkerCliTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _latest_run_id(self):
+        return storage.list_runs(self.db)[0].id
+
+    def _queue(self, *extra):
+        return run_cli([
+            "run", "--prompt", "p", "--provider", "mock", "--max-loops", "1", "--queued",
+            "--db-path", self.db, *extra,
+        ])
+
+    def test_run_queued_enqueues_without_executing(self):
+        code, out, err = self._queue()
+        self.assertEqual(code, 0)
+        self.assertIn("Queued run", out)
+        run_id = self._latest_run_id()
+        self.assertEqual(storage.get_run(self.db, run_id).status, "CREATED")
+        self.assertEqual(storage.get_job_by_run_id(self.db, run_id).status, "QUEUED")
+
+    def test_queue_list(self):
+        self._queue()
+        code, out, err = run_cli(["queue", "list", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("QUEUED", out)
+
+    def test_queue_cancel(self):
+        self._queue()
+        run_id = self._latest_run_id()
+        code, out, err = run_cli(["queue", "cancel", "--run-id", str(run_id), "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("Cancelled", out)
+        self.assertEqual(storage.get_job_by_run_id(self.db, run_id).status, "CANCELLED")
+
+    def test_worker_run_once_executes_job(self):
+        self._queue("--no-approval")
+        run_id = self._latest_run_id()
+        code, out, err = run_cli(["worker", "run", "--once", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("executed one job", out)
+        self.assertEqual(storage.get_run(self.db, run_id).status, "DONE")
+
+    def test_worker_run_once_empty_queue(self):
+        code, out, err = run_cli(["worker", "run", "--once", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("no queued jobs", out)
+
+
 if __name__ == "__main__":
     unittest.main()
