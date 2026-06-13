@@ -22,14 +22,14 @@ A user starts a run against a project with an initial instruction, for example "
 
 User command -> create run -> execute agent prompt -> collect stdout/stderr/result -> summarize result -> generate next prompt -> wait for approval or auto-run -> repeat until done, failed, stopped, or `maxLoops` reached.
 
-1. **User command** ??a command arrives from the CLI or web UI specifying the project, initial prompt, provider, and run options (`maxLoops`, auto-run flag).
-2. **Create run** ??a `runs` row is persisted with status `CREATED`.
-3. **Execute agent prompt** ??the selected runner invokes the agent with the current prompt.
-4. **Collect stdout/stderr/result** ??stdout, stderr, exit code, `started_at`, and `finished_at` are captured into a `steps` row and any produced files into `artifacts`.
-5. **Summarize result** ??the collected output is condensed into a short summary used for context and display.
-6. **Generate next prompt** ??the summary and result drive generation of the next prompt.
-7. **Wait for approval or auto-run** ??an `approvals` record gates the next step unless auto-run is explicitly enabled.
-8. **Repeat** ??steps 3?? loop until a terminal condition (`DONE`, `FAILED`, `STOPPED`) or `maxLoops`.
+1. **User command** — a command arrives from the CLI or web UI specifying the project, initial prompt, provider, and run options (`maxLoops`, auto-run flag).
+2. **Create run** — a `runs` row is persisted with status `CREATED`.
+3. **Execute agent prompt** — the selected runner invokes the agent with the current prompt.
+4. **Collect stdout/stderr/result** — stdout, stderr, exit code, `started_at`, and `finished_at` are captured into a `steps` row and any produced files into `artifacts`.
+5. **Summarize result** — the collected output is condensed into a short summary used for context and display.
+6. **Generate next prompt** — the summary and result drive generation of the next prompt.
+7. **Wait for approval or auto-run** — an `approvals` record gates the next step unless auto-run is explicitly enabled.
+8. **Repeat** — steps 3–7 loop until a terminal condition (`DONE`, `FAILED`, `STOPPED`) or `maxLoops`.
 
 ## MVP Scope
 
@@ -56,26 +56,26 @@ The MVP is implemented in **Python** with **SQLite** for persistence and is **CL
 
 The system is a single Python process for the MVP, organized into layers:
 
-- **Entry layer** ??CLI commands (FastAPI endpoints added later) that create runs and issue control actions (approve, stop).
-- **Orchestrator** ??drives the state machine, advancing a run from state to state, enforcing `maxLoops`, and recording transitions.
-- **Runner providers** ??a common interface with pluggable implementations; the MVP ships `ClaudeCodeRunner` (subprocess to the Claude Code CLI) and `MockRunner`.
-- **Result collector and summarizer** ??captures stdout/stderr/exit code/timestamps from the runner and produces a short summary.
-- **Next-prompt generator** ??turns the summary and result into the next prompt.
-- **Approval service** ??creates and resolves the approval gate; honors the auto-run flag.
-- **Persistence** ??**SQLite** accessed through a thin data-access layer storing projects, runs, steps, artifacts, agent providers, and approvals.
+- **Entry layer** — CLI commands (FastAPI endpoints added later) that create runs and issue control actions (approve, stop).
+- **Orchestrator** — drives the state machine, advancing a run from state to state, enforcing `maxLoops`, and recording transitions.
+- **Runner providers** — a common interface with pluggable implementations; the MVP ships `ClaudeCodeRunner` (subprocess to the Claude Code CLI) and `MockRunner`.
+- **Result collector and summarizer** — captures stdout/stderr/exit code/timestamps from the runner and produces a short summary.
+- **Next-prompt generator** — turns the summary and result into the next prompt.
+- **Approval service** — creates and resolves the approval gate; honors the auto-run flag.
+- **Persistence** — **SQLite** accessed through a thin data-access layer storing projects, runs, steps, artifacts, agent providers, and approvals.
 
 Later additions: a **FastAPI** service exposing the same orchestrator over HTTP, and a **React or Next.js** front end consuming that API.
 
 ## Main Components
 
-- **CLI** ??parses user commands, creates runs, lists state, submits approvals and stop requests.
-- **Orchestrator / State Machine** ??owns run lifecycle and transitions; the single place that decides the next state.
-- **Runner interface + providers** ??`ClaudeCodeRunner`, `CodexRunner`, `ShellRunner`, `MockRunner`; each returns stdout, stderr, exit code, `started_at`, `finished_at`.
-- **Result Collector** ??persists a `steps` row and `artifacts` from a runner result.
-- **Summarizer** ??produces a concise summary of a step result.
-- **Next-Prompt Generator** ??produces the next prompt from the prior result and summary.
-- **Approval Service** ??creates approval records and resolves them (approved/rejected), or auto-resolves them when auto-run is set.
-- **Persistence Layer** ??SQLite schema and queries for all entities.
+- **CLI** — parses user commands, creates runs, lists state, submits approvals and stop requests.
+- **Orchestrator / State Machine** — owns run lifecycle and transitions; the single place that decides the next state.
+- **Runner interface + providers** — `ClaudeCodeRunner`, `CodexRunner`, `ShellRunner`, `MockRunner`; each returns stdout, stderr, exit code, `started_at`, `finished_at`.
+- **Result Collector** — persists a `steps` row and `artifacts` from a runner result.
+- **Summarizer** — produces a concise summary of a step result.
+- **Next-Prompt Generator** — produces the next prompt from the prior result and summary.
+- **Approval Service** — creates approval records and resolves them (approved/rejected), or auto-resolves them when auto-run is set.
+- **Persistence Layer** — SQLite schema and queries for all entities.
 - **(Later) FastAPI app** and **(Later) React/Next.js UI**.
 
 ## State Machine
@@ -86,19 +86,19 @@ States advance in this order:
 
 Transitions:
 
-- **CREATED** ??run row persisted with its project, initial prompt, provider, `maxLoops`, and auto-run flag. Transitions to `QUEUED`.
-- **QUEUED** ??run is accepted for execution. Transitions to `RUNNING`.
-- **RUNNING** ??the runner executes the current prompt against the agent. On a captured result, transitions to `COLLECTING_RESULT`; on a runner/launch error, transitions to `FAILED`.
-- **COLLECTING_RESULT** ??stdout, stderr, exit code, and timestamps are stored as a `steps` row with `artifacts`. A nonzero exit treated as fatal transitions to `FAILED`; otherwise transitions to `GENERATING_NEXT_PROMPT`. If the agent reports the task complete, transitions to `DONE`.
-- **GENERATING_NEXT_PROMPT** ??the summary and result produce the next prompt. Transitions to `WAITING_APPROVAL`.
-- **WAITING_APPROVAL** ??an `approvals` record gates the next prompt. If auto-run is enabled, the approval is auto-resolved and the run transitions to `RUNNING_NEXT`. On explicit approval, transitions to `RUNNING_NEXT`. On rejection or a stop request, transitions to `STOPPED`.
-- **RUNNING_NEXT** ??increments the loop counter and re-enters execution. If the loop counter has reached `maxLoops`, transitions to `STOPPED`; otherwise loops back to `RUNNING` with the new prompt.
+- **CREATED** — run row persisted with its project, initial prompt, provider, `maxLoops`, and auto-run flag. Transitions to `QUEUED`.
+- **QUEUED** — run is accepted for execution. Transitions to `RUNNING`.
+- **RUNNING** — the runner executes the current prompt against the agent. On a captured result, transitions to `COLLECTING_RESULT`; on a runner/launch error, transitions to `FAILED`.
+- **COLLECTING_RESULT** — stdout, stderr, exit code, and timestamps are stored as a `steps` row with `artifacts`. A nonzero exit treated as fatal transitions to `FAILED`; otherwise transitions to `GENERATING_NEXT_PROMPT`. If the agent reports the task complete, transitions to `DONE`.
+- **GENERATING_NEXT_PROMPT** — the summary and result produce the next prompt. Transitions to `WAITING_APPROVAL`.
+- **WAITING_APPROVAL** — an `approvals` record gates the next prompt. If auto-run is enabled, the approval is auto-resolved and the run transitions to `RUNNING_NEXT`. On explicit approval, transitions to `RUNNING_NEXT`. On rejection or a stop request, transitions to `STOPPED`.
+- **RUNNING_NEXT** — increments the loop counter and re-enters execution. If the loop counter has reached `maxLoops`, transitions to `STOPPED`; otherwise loops back to `RUNNING` with the new prompt.
 
 Terminal states:
 
-- **DONE** ??the task was reported complete; no further steps run.
-- **FAILED** ??a step failed fatally (runner error or fatal nonzero exit); the loop ends.
-- **STOPPED** ??the user rejected/stopped the run, or `maxLoops` was reached before completion.
+- **DONE** — the task was reported complete; no further steps run.
+- **FAILED** — a step failed fatally (runner error or fatal nonzero exit); the loop ends.
+- **STOPPED** — the user rejected/stopped the run, or `maxLoops` was reached before completion.
 
 The loop from `RUNNING` through `RUNNING_NEXT` is bounded by `maxLoops`: the run cannot execute more than `maxLoops` agent invocations, after which it ends in `STOPPED`.
 
@@ -180,10 +180,10 @@ Relationships: a project has many runs; a run has many steps; a step has many ar
 
 All providers implement one interface, for example `run(prompt, working_dir, config) -> RunnerResult`, where `RunnerResult` carries `stdout`, `stderr`, `exit_code`, `started_at`, and `finished_at`. The orchestrator depends only on this interface, so providers are interchangeable and isolated from state-machine logic. Every implementation captures stdout, stderr, exit code, `started_at`, and `finished_at`.
 
-- **ClaudeCodeRunner** ??spawns a subprocess invoking the Claude Code CLI with the prompt, captures its output streams, exit code, and timestamps. Implemented first.
-- **CodexRunner** ??invokes the Codex coding agent through the same interface and captured fields.
-- **ShellRunner** ??runs a shell command directly for steps that are plain commands rather than agent prompts, capturing the same fields.
-- **MockRunner** ??returns canned results with no external process; used in tests to exercise the state machine, approval gate, and `maxLoops` deterministically.
+- **ClaudeCodeRunner** — spawns a subprocess invoking the Claude Code CLI with the prompt, captures its output streams, exit code, and timestamps. Implemented first.
+- **CodexRunner** — invokes the Codex coding agent through the same interface and captured fields.
+- **ShellRunner** — runs a shell command directly for steps that are plain commands rather than agent prompts, capturing the same fields.
+- **MockRunner** — returns canned results with no external process; used in tests to exercise the state machine, approval gate, and `maxLoops` deterministically.
 
 ## Approval Model
 
@@ -191,11 +191,11 @@ By default, every generated next prompt passes through an approval gate: the run
 
 ## Safety Model
 
-- **No secret access** ??runners and generators do not read, print, or modify secret files (for example `.env`, key files, credentials).
-- **No hardcoded secrets** ??no credentials or tokens are embedded in code or generated prompts; provider config holds only non-secret settings.
-- **No destructive commands by default** ??generated prompts and shell steps avoid destructive operations (deleting files, force-pushing, dropping data) unless the user explicitly requested them.
-- **Bounded loops** ??`maxLoops` caps the number of agent invocations per run, preventing runaway iteration.
-- **Provider isolation** ??runner logic is confined behind the runner interface, so a misbehaving provider cannot alter orchestrator or persistence behavior, and providers can be swapped without touching the state machine.
+- **No secret access** — runners and generators do not read, print, or modify secret files (for example `.env`, key files, credentials).
+- **No hardcoded secrets** — no credentials or tokens are embedded in code or generated prompts; provider config holds only non-secret settings.
+- **No destructive commands by default** — generated prompts and shell steps avoid destructive operations (deleting files, force-pushing, dropping data) unless the user explicitly requested them.
+- **Bounded loops** — `maxLoops` caps the number of agent invocations per run, preventing runaway iteration.
+- **Provider isolation** — runner logic is confined behind the runner interface, so a misbehaving provider cannot alter orchestrator or persistence behavior, and providers can be swapped without touching the state machine.
 
 ## Example User Flow
 
@@ -214,7 +214,7 @@ By default, every generated next prompt passes through an approval gate: the run
 Input collected from the prior step:
 
 - exit_code: `1`
-- stdout (excerpt): `2 passed, 1 failed ??test_signup_rejects_empty_email`
+- stdout (excerpt): `2 passed, 1 failed — test_signup_rejects_empty_email`
 - stderr (excerpt): `AssertionError: expected 400, got 500`
 - summary: "Validation added, but the empty-email case returns 500 instead of 400; one test fails."
 
@@ -227,8 +227,8 @@ Generation logic:
 
 ## Future Roadmap
 
-- **FastAPI service** ??expose the orchestrator over HTTP so runs can be created, approved, and stopped via API.
-- **Web UI (React or Next.js)** ??a front end over the FastAPI service for starting runs, reviewing summaries and artifacts, and acting on approval gates.
-- **Additional runner providers** ??complete `CodexRunner` and `ShellRunner`, and add further agent integrations behind the same interface.
-- **Parallel runs** ??execute multiple runs (and eventually independent steps) concurrently with appropriate scheduling.
-- **Persistence and observability improvements** ??richer history, structured metrics, tracing of step timing and provider behavior, and a database beyond SQLite for higher concurrency.
+- **FastAPI service** — expose the orchestrator over HTTP so runs can be created, approved, and stopped via API.
+- **Web UI (React or Next.js)** — a front end over the FastAPI service for starting runs, reviewing summaries and artifacts, and acting on approval gates.
+- **Additional runner providers** — complete `CodexRunner` and `ShellRunner`, and add further agent integrations behind the same interface.
+- **Parallel runs** — execute multiple runs (and eventually independent steps) concurrently with appropriate scheduling.
+- **Persistence and observability improvements** — richer history, structured metrics, tracing of step timing and provider behavior, and a database beyond SQLite for higher concurrency.
