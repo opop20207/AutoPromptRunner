@@ -1,14 +1,14 @@
 # AutoPromptRunner
 
 AutoPromptRunner is a local-first prompt orchestration tool. It sends a prompt to a
-coding agent, captures the agent's output, and decides whether to continue based on
-the result. All state, logs, and configuration stay on the local machine; no remote
-service is required to run it.
+coding agent, captures the agent's output, generates the next prompt, and decides
+whether to continue. All state, logs, and configuration stay on the local machine; no
+remote service is required to run it.
 
-This repository is at an early stage. The CLI runs end to end against a deterministic
-`MockRunner` and now persists run history to a local SQLite database. No external AI
-tools are called yet, and there are no third-party runtime dependencies (standard
-library only).
+The CLI runs a bounded prompt loop against a deterministic `MockRunner`, persists run
+history to a local SQLite database, and gates each generated next prompt behind an
+approval by default. No external AI tools are called yet, no network access is used,
+and there are no third-party runtime dependencies (standard library only).
 
 ## MVP Workflow
 
@@ -17,40 +17,47 @@ User command
   -> create run
   -> execute agent prompt
   -> collect stdout / stderr / result
-  -> summarize result
   -> generate next prompt
   -> wait for approval or auto-run
   -> repeat until done, failed, stopped, or max-loops reached
 ```
-
-The current implementation covers the first legs of that workflow: a single prompt is
-executed by the `MockRunner`, the run and its step are persisted, the run status is
-advanced (`CREATED -> RUNNING -> DONE/FAILED`), and a compact report is printed.
-Next-prompt generation, the approval gate, and the multi-step loop are planned. See
-[PROJECT.md](PROJECT.md) for the full specification.
 
 ## Requirements
 
 - Python >= 3.11
 - No third-party runtime dependencies (standard library only)
 
+## Prompt Loop and Approval Gate
+
+A run executes one step at a time through a provider runner. After each successful
+step the `PromptGenerator` produces a compact, deterministic next prompt (a "continue"
+prompt on success, a "fix" prompt on failure) from the previous result.
+
+By default `require_approval` is true: the run executes one step, stores a PENDING
+approval with the generated next prompt, and pauses at `WAITING_APPROVAL`. Nothing
+else runs until you approve or reject it. This is the safety gate from AGENTS.md.
+
+`--no-approval` disables the gate and auto-runs steps until `--max-loops` is reached or
+a step fails. `max_loops` is a hard bound: the loop can never run more than that many
+steps, so it can never run forever.
+
+Run status follows `CREATED -> RUNNING -> WAITING_APPROVAL -> DONE / FAILED / STOPPED`:
+
+- `max_loops` reached -> the run is marked `DONE`.
+- a step exits non-zero -> the step and a generated fix prompt are stored, and the run
+  is marked `FAILED`.
+- a pending approval is rejected -> the run is marked `STOPPED`.
+
 ## Persistence
 
-Run history is stored in a local SQLite database using the standard-library `sqlite3`
-module. By default the database lives at `.autoprompt/autoprompt.db` (relative to the
-current working directory); the parent directory is created automatically. Pass
-`--db-path <path>` to any database command to use a different location.
+Run history is stored in a local SQLite database (standard-library `sqlite3`). By
+default it lives at `.autoprompt/autoprompt.db` (relative to the current working
+directory); the parent directory is created automatically. Pass `--db-path <path>` to
+any database command to use a different location.
 
-Three tables are used:
-
-- `projects` — `id`, `name`, `repo_path`, `created_at`.
-- `runs` — `id`, `project_id`, `root_prompt`, `provider`, `status`, `max_loops`,
-  `require_approval`, `created_at`, `finished_at`.
-- `steps` — `id`, `run_id`, `loop_index`, `prompt`, `stdout`, `stderr`, `exit_code`,
-  `status`, `started_at`, `finished_at`, `next_prompt`.
-
-Run status follows the practical subset `CREATED -> RUNNING -> DONE / FAILED / STOPPED`;
-illegal transitions are rejected before they reach the database.
+Tables: `projects`, `runs`, `steps`, and `approvals` (id, run_id, step_id,
+next_prompt, status, created_at, decided_at). Approval status is one of `PENDING`,
+`APPROVED`, `REJECTED`.
 
 ## Installation (optional)
 
@@ -73,40 +80,48 @@ $env:PYTHONPATH = "src"; python -m autoprompt_runner.cli version
 PYTHONPATH=src python -m autoprompt_runner.cli version
 ```
 
-Print the package version:
-
-```
-python -m autoprompt_runner.cli version
-```
-
 Initialize the database (creates `.autoprompt/autoprompt.db`):
 
 ```
 python -m autoprompt_runner.cli init-db
 ```
 
-Run a prompt against the mock provider (creates and persists a run):
+Start a run with the approval gate (default). This executes the first step, generates
+the next prompt, stores a pending approval, and stops at `WAITING_APPROVAL`:
 
 ```
-python -m autoprompt_runner.cli run --prompt "Improve README" --provider mock --max-loops 1
+python -m autoprompt_runner.cli run --prompt "Improve README" --provider mock --max-loops 3
 ```
 
-List recent runs (id, status, provider, created_at, short prompt):
+Approve the pending next prompt and execute it as the next step (this may itself stop
+at another approval, or finish the run when `max_loops` is reached):
+
+```
+python -m autoprompt_runner.cli approve-next --run-id 1
+```
+
+Reject the pending next prompt and stop the run:
+
+```
+python -m autoprompt_runner.cli reject-next --run-id 1
+```
+
+Auto-run without the approval gate, up to `--max-loops` (or until a failure):
+
+```
+python -m autoprompt_runner.cli run --prompt "Improve README" --provider mock --max-loops 3 --no-approval
+```
+
+List recent runs, and show one run with its steps and any pending approval:
 
 ```
 python -m autoprompt_runner.cli list-runs
-```
-
-Show one run and its steps:
-
-```
 python -m autoprompt_runner.cli show-run --id 1
 ```
 
-The `run` command validates that the prompt is non-empty and that `--max-loops` is at
-least 1, ensures the database exists, persists the run and its step, updates the run
-status, and prints a compact execution report including the run id. `show-run` exits
-with a non-zero status if the given id does not exist.
+`approve-next` and `reject-next` exit non-zero with a clean error when there is no
+pending approval, and `approve-next` also exits non-zero for a run that is already
+`DONE`, `FAILED`, or `STOPPED`.
 
 ## Runner Providers
 

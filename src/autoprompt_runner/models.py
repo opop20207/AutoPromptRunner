@@ -1,7 +1,7 @@
 """Core data structures for AutoPromptRunner.
 
 These dataclasses are intentionally simple containers shared between the CLI, the
-runners, the storage layer, and (later) the orchestrator. They carry no behavior.
+runners, the storage layer, and the services. They carry no behavior.
 """
 
 from __future__ import annotations
@@ -28,12 +28,7 @@ class AgentResult:
 
 @dataclass
 class RunRequest:
-    """A request to execute one prompt against a provider under explicit limits.
-
-    ``require_approval`` reflects the default approval gate; when it is ``False`` the
-    caller has explicitly opted into auto-run. The loop bound ``max_loops`` is carried
-    here but not yet exercised by the single-step run.
-    """
+    """A request to execute one prompt against a provider under explicit limits."""
 
     prompt: str
     provider: str = "mock"
@@ -43,12 +38,7 @@ class RunRequest:
 
 @dataclass
 class RunReport:
-    """Compact, user-facing summary of a run.
-
-    ``status`` is one of the terminal labels used by the CLI report (for example
-    ``"DONE"`` or ``"FAILED"``). ``result`` and ``next_prompt`` may be ``None`` when a
-    run produced no execution result or no follow-up prompt.
-    """
+    """Compact, user-facing summary of a single run step."""
 
     status: str
     provider: str
@@ -95,3 +85,62 @@ class StoredStep:
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     next_prompt: Optional[str] = None
+
+
+@dataclass
+class Approval:
+    """An approval row as persisted in the ``approvals`` table.
+
+    Gates the execution of ``next_prompt`` for a run. ``decided_at`` is ``None`` while
+    the approval is still PENDING.
+    """
+
+    id: int
+    run_id: int
+    step_id: int
+    next_prompt: str
+    status: str
+    created_at: str
+    decided_at: Optional[str] = None
+
+
+@dataclass
+class NextPrompt:
+    """A generated next prompt and how it was derived.
+
+    ``kind`` is ``"continue"`` when the previous step succeeded or ``"fix"`` when it
+    failed. ``loop_index`` is the index of the step this prompt would drive next.
+    """
+
+    prompt: str
+    kind: str
+    loop_index: int
+
+
+@dataclass
+class StepExecutionRequest:
+    """A request to execute one loop step against a provider."""
+
+    run_id: int
+    prompt: str
+    provider: str
+    loop_index: int
+
+
+@dataclass
+class StepExecutionReport:
+    """Compact result of executing (or advancing) a run, returned by RunService.
+
+    ``run_status`` is the run's status after the action. ``next_prompt`` and
+    ``approval_id`` are populated when the run paused at WAITING_APPROVAL.
+    """
+
+    run_id: int
+    run_status: str
+    loop_index: int
+    provider: str
+    step_id: Optional[int] = None
+    exit_code: Optional[int] = None
+    next_prompt: Optional[str] = None
+    approval_id: Optional[int] = None
+    message: Optional[str] = None

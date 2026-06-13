@@ -2,15 +2,16 @@
 
 CLI-first entry point (see PROJECT.md). Commands in this step:
 
-* ``version``   -- print the package version.
-* ``init-db``   -- create the local SQLite database.
-* ``run``       -- execute a single prompt against a provider (only ``mock`` for now),
-  persist the run and its step, update the run status, and print a compact report.
-* ``list-runs`` -- list recent runs from the database.
-* ``show-run``  -- show one run and its steps.
+* ``version``      -- print the package version.
+* ``init-db``      -- create the local SQLite database.
+* ``run``          -- start a run; execute the first step, generate the next prompt,
+  and pause at a pending approval (default) or auto-run up to ``--max-loops``.
+* ``approve-next`` -- approve a run's pending next prompt and execute it.
+* ``reject-next``  -- reject a run's pending next prompt and stop the run.
+* ``list-runs``    -- list recent runs.
+* ``show-run``     -- show one run, its steps, and any pending approval.
 
-Real provider execution (Claude Code, Codex), next-prompt generation, the approval
-gate, and the multi-step loop are not implemented yet.
+Real provider execution (Claude Code, Codex) and a web UI are not implemented yet.
 """
 
 from __future__ import annotations
@@ -20,15 +21,13 @@ import sys
 from typing import Dict, Optional, Sequence, Type
 
 from . import __version__, storage
-from .models import RunReport, RunRequest
 from .runners import AgentRunner, MockRunner
+from .models import StepExecutionReport
+from .services import RunService, RunServiceError
 from .state import RunStatus
 
-# Registry of available providers. Only the mock provider is supported in this step;
-# real providers (claude_code, codex) will be registered here as they are implemented.
-PROVIDERS: Dict[str, Type[AgentRunner]] = {
-    "mock": MockRunner,
-}
+# Registry of providers exposed by the CLI. Only the mock provider is supported here.
+PROVIDERS: Dict[str, Type[AgentRunner]] = {"mock": MockRunner}
 
 # Exit codes.
 EXIT_OK = 0
@@ -60,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_path(init_parser)
 
     run_parser = subparsers.add_parser(
-        "run", help="Execute a prompt, persist the run, and print a report."
+        "run", help="Start a run; pause at an approval gate by default."
     )
     run_parser.add_argument("--prompt", required=True, help="Prompt to send. Must not be empty.")
     run_parser.add_argument(
@@ -70,16 +69,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-loops", dest="max_loops", type=int, default=1, help="Max agent invocations. Must be >= 1."
     )
     run_parser.add_argument(
-        "--auto-run", dest="auto_run", action="store_true",
-        help="Skip the approval gate. Reserved for future loops; no effect yet.",
+        "--no-approval", dest="no_approval", action="store_true",
+        help="Disable the approval gate and auto-run up to --max-loops.",
     )
     _add_db_path(run_parser)
+
+    approve_parser = subparsers.add_parser(
+        "approve-next", help="Approve a run's pending next prompt and execute it."
+    )
+    approve_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    _add_db_path(approve_parser)
+
+    reject_parser = subparsers.add_parser(
+        "reject-next", help="Reject a run's pending next prompt and stop the run."
+    )
+    reject_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    _add_db_path(reject_parser)
 
     list_parser = subparsers.add_parser("list-runs", help="List recent runs.")
     list_parser.add_argument("--limit", type=int, default=20, help="Maximum number of runs to show.")
     _add_db_path(list_parser)
 
-    show_parser = subparsers.add_parser("show-run", help="Show one run and its steps.")
+    show_parser = subparsers.add_parser("show-run", help="Show one run, its steps, and pending approval.")
     show_parser.add_argument("--id", dest="run_id", type=int, required=True, help="Run id to show.")
     _add_db_path(show_parser)
 
@@ -87,20 +98,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_version() -> int:
-    """Print the package version."""
     print(__version__)
     return EXIT_OK
 
 
 def cmd_init_db(args: argparse.Namespace) -> int:
-    """Create the database (and parent directory) and print its path."""
     path = storage.init_db(args.db_path)
     print(f"Database initialized at: {path}")
     return EXIT_OK
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """Validate inputs, persist a run + step, run the provider, and print a report."""
     prompt = (args.prompt or "").strip()
     if not prompt:
         print("error: --prompt must not be empty", file=sys.stderr)
@@ -110,77 +118,58 @@ def cmd_run(args: argparse.Namespace) -> int:
         return EXIT_USAGE
     if args.provider not in PROVIDERS:
         supported = ", ".join(sorted(PROVIDERS))
-        print(
-            f"error: unsupported provider '{args.provider}'. Supported: {supported}",
-            file=sys.stderr,
-        )
+        print(f"error: unsupported provider '{args.provider}'. Supported: {supported}", file=sys.stderr)
         return EXIT_USAGE
 
-    request = RunRequest(
+    service = RunService(args.db_path)
+    report = service.start(
         prompt=prompt,
         provider=args.provider,
         max_loops=args.max_loops,
-        require_approval=not args.auto_run,
+        require_approval=not args.no_approval,
     )
+    _print_step_report(report)
+    return _exit_code_for(report)
 
-    db_path = storage.init_db(args.db_path)  # ensure DB exists; returns resolved path
-    run_id = storage.create_run(
-        db_path,
-        root_prompt=request.prompt,
-        provider=request.provider,
-        max_loops=request.max_loops,
-        require_approval=request.require_approval,
-    )
-    storage.update_run_status(db_path, run_id, RunStatus.RUNNING.value)
 
-    runner = PROVIDERS[request.provider]()
-    result = runner.run(request.prompt)
-    final_status = RunStatus.DONE.value if result.exit_code == 0 else RunStatus.FAILED.value
+def cmd_approve_next(args: argparse.Namespace) -> int:
+    service = RunService(args.db_path)
+    try:
+        report = service.approve_and_continue(args.run_id)
+    except RunServiceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    _print_step_report(report)
+    return _exit_code_for(report)
 
-    storage.create_step(
-        db_path,
-        run_id=run_id,
-        loop_index=0,
-        prompt=request.prompt,
-        status=final_status,
-        stdout=result.stdout,
-        stderr=result.stderr,
-        exit_code=result.exit_code,
-        started_at=result.started_at,
-        finished_at=result.finished_at,
-        next_prompt=None,
-    )
-    storage.update_run_status(db_path, run_id, final_status, finished_at=result.finished_at)
 
-    report = RunReport(
-        status=final_status,
-        provider=runner.name,
-        prompt=request.prompt,
-        result=result,
-        next_prompt=None,
-    )
-    _print_report(report, run_id=run_id)
-    return EXIT_OK if result.exit_code == 0 else EXIT_RUN_FAILED
+def cmd_reject_next(args: argparse.Namespace) -> int:
+    service = RunService(args.db_path)
+    try:
+        report = service.reject(args.run_id)
+    except RunServiceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    _print_step_report(report)
+    return EXIT_OK
 
 
 def cmd_list_runs(args: argparse.Namespace) -> int:
-    """Print a compact list of recent runs."""
     db_path = storage.init_db(args.db_path)
     runs = storage.list_runs(db_path, limit=args.limit)
     if not runs:
         print("No runs found.")
         return EXIT_OK
-    print(f"{'ID':>4}  {'STATUS':<8}  {'PROVIDER':<10}  {'CREATED_AT':<32}  PROMPT")
+    print(f"{'ID':>4}  {'STATUS':<16}  {'PROVIDER':<10}  {'CREATED_AT':<32}  PROMPT")
     for run in runs:
         print(
-            f"{run.id:>4}  {run.status:<8}  {run.provider:<10}  "
-            f"{(run.created_at or ''):<32}  {_shorten(run.root_prompt, 48)}"
+            f"{run.id:>4}  {run.status:<16}  {run.provider:<10}  "
+            f"{(run.created_at or ''):<32}  {_shorten(run.root_prompt, 40)}"
         )
     return EXIT_OK
 
 
 def cmd_show_run(args: argparse.Namespace) -> int:
-    """Print one run's detail and its steps, or a clean error if it is missing."""
     db_path = storage.init_db(args.db_path)
     run = storage.get_run(db_path, args.run_id)
     if run is None:
@@ -188,6 +177,7 @@ def cmd_show_run(args: argparse.Namespace) -> int:
         return EXIT_NOT_FOUND
 
     steps = storage.get_steps_for_run(db_path, run.id)
+    pending = storage.get_pending_approval(db_path, run.id)
     detail = [
         f"Run #{run.id}",
         f"  status          : {run.status}",
@@ -210,10 +200,24 @@ def cmd_show_run(args: argparse.Namespace) -> int:
         print(f"      prompt     : {_shorten(step.prompt, 70)}")
         if step.stdout:
             print(f"      stdout     : {_shorten(step.stdout, 80)}")
-        if step.stderr:
-            print(f"      stderr     : {_shorten(step.stderr, 80)}")
-        print(f"      next_prompt: {step.next_prompt or '(none)'}")
+        if step.next_prompt:
+            print(f"      next_prompt: {_shorten(step.next_prompt, 80)}")
+
+    if pending is not None:
+        print("Pending approval:")
+        print(f"  id          : {pending.id}")
+        print(f"  step_id     : {pending.step_id}")
+        print(f"  status      : {pending.status}")
+        print(f"  next_prompt : {_shorten(pending.next_prompt, 100)}")
+    else:
+        last_next = next((s.next_prompt for s in reversed(steps) if s.next_prompt), None)
+        if last_next:
+            print(f"Next prompt : {_shorten(last_next, 100)}")
     return EXIT_OK
+
+
+def _exit_code_for(report: StepExecutionReport) -> int:
+    return EXIT_RUN_FAILED if report.run_status == RunStatus.FAILED.value else EXIT_OK
 
 
 def _shorten(text: Optional[str], limit: int) -> str:
@@ -224,31 +228,21 @@ def _shorten(text: Optional[str], limit: int) -> str:
     return collapsed[: max(0, limit - 3)] + "..."
 
 
-def _print_report(report: RunReport, run_id: Optional[int] = None) -> None:
-    """Print a compact, human-readable execution report."""
-    indent = "\n" + " " * 16
-    lines = ["Run report"]
-    if run_id is not None:
-        lines.append(f"  run_id      : {run_id}")
-    lines.extend(
-        [
-            f"  status      : {report.status}",
-            f"  provider    : {report.provider}",
-            f"  prompt      : {report.prompt}",
-        ]
-    )
-    result = report.result
-    if result is not None:
-        lines.append(f"  exit_code   : {result.exit_code}")
-        lines.append(f"  started_at  : {result.started_at}")
-        lines.append(f"  finished_at : {result.finished_at}")
-        stdout = result.stdout.rstrip("\n")
-        if stdout:
-            lines.append(f"  stdout      : {stdout.replace(chr(10), indent)}")
-        stderr = result.stderr.rstrip("\n")
-        if stderr:
-            lines.append(f"  stderr      : {stderr.replace(chr(10), indent)}")
-    lines.append(f"  next_prompt : {report.next_prompt or '(none)'}")
+def _print_step_report(report: StepExecutionReport) -> None:
+    """Print a compact report for a run step / advance."""
+    lines = [
+        "Run report",
+        f"  run_id      : {report.run_id}",
+        f"  status      : {report.run_status}",
+        f"  provider    : {report.provider}",
+        f"  loop_index  : {report.loop_index}",
+        f"  step_id     : {report.step_id if report.step_id is not None else '(none)'}",
+        f"  exit_code   : {report.exit_code if report.exit_code is not None else '(none)'}",
+        f"  approval_id : {report.approval_id if report.approval_id is not None else '(none)'}",
+        f"  next_prompt : {_shorten(report.next_prompt, 100) if report.next_prompt else '(none)'}",
+    ]
+    if report.message:
+        lines.append(f"  note        : {report.message}")
     print("\n".join(lines))
 
 
@@ -263,6 +257,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_init_db(args)
     if args.command == "run":
         return cmd_run(args)
+    if args.command == "approve-next":
+        return cmd_approve_next(args)
+    if args.command == "reject-next":
+        return cmd_reject_next(args)
     if args.command == "list-runs":
         return cmd_list_runs(args)
     if args.command == "show-run":

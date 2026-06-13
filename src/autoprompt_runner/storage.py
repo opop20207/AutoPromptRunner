@@ -1,9 +1,9 @@
 """SQLite persistence for AutoPromptRunner.
 
 A thin data-access layer over the Python standard-library ``sqlite3`` module. It
-stores projects, runs, and steps so run history survives across CLI invocations. All
-state stays on the local machine (see AGENTS.md, "Logging Rules"). No third-party
-packages are used.
+stores projects, runs, steps, and approvals so run history survives across CLI
+invocations. All state stays on the local machine (see AGENTS.md, "Logging Rules").
+No third-party packages are used.
 """
 
 from __future__ import annotations
@@ -13,7 +13,8 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from .models import StoredRun, StoredStep
+from .approvals import ApprovalStatus
+from .models import Approval, StoredRun, StoredStep
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
 # Default database location, relative to the current working directory.
@@ -53,6 +54,18 @@ CREATE TABLE IF NOT EXISTS steps (
     finished_at TEXT,
     next_prompt TEXT,
     FOREIGN KEY (run_id) REFERENCES runs (id)
+);
+
+CREATE TABLE IF NOT EXISTS approvals (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    step_id INTEGER NOT NULL,
+    next_prompt TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs (id),
+    FOREIGN KEY (step_id) REFERENCES steps (id)
 );
 """
 
@@ -226,6 +239,89 @@ def get_steps_for_run(db_path: str, run_id: int) -> List[StoredStep]:
         conn.close()
 
 
+def create_approval(
+    db_path: str,
+    run_id: int,
+    step_id: int,
+    next_prompt: str,
+    status: Optional[str] = None,
+) -> int:
+    """Insert an approval (PENDING by default) and return its id."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        cur = conn.execute(
+            "INSERT INTO approvals (run_id, step_id, next_prompt, status, created_at, decided_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, step_id, next_prompt, status or ApprovalStatus.PENDING.value, _utcnow_iso(), None),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def get_pending_approval(db_path: str, run_id: int) -> Optional[Approval]:
+    """Return the latest PENDING approval for ``run_id`` or ``None``."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM approvals WHERE run_id = ? AND status = ? ORDER BY id DESC LIMIT 1",
+            (run_id, ApprovalStatus.PENDING.value),
+        ).fetchone()
+        return _row_to_approval(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def approve_pending_approval(db_path: str, run_id: int) -> Optional[Approval]:
+    """Mark the run's pending approval APPROVED. Return it, or ``None`` if absent."""
+    return _decide_pending_approval(db_path, run_id, ApprovalStatus.APPROVED)
+
+
+def reject_pending_approval(db_path: str, run_id: int) -> Optional[Approval]:
+    """Mark the run's pending approval REJECTED. Return it, or ``None`` if absent."""
+    return _decide_pending_approval(db_path, run_id, ApprovalStatus.REJECTED)
+
+
+def _decide_pending_approval(db_path: str, run_id: int, status: ApprovalStatus) -> Optional[Approval]:
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM approvals WHERE run_id = ? AND status = ? ORDER BY id DESC LIMIT 1",
+            (run_id, ApprovalStatus.PENDING.value),
+        ).fetchone()
+        if row is None:
+            return None
+        decided_at = _utcnow_iso()
+        conn.execute(
+            "UPDATE approvals SET status = ?, decided_at = ? WHERE id = ?",
+            (status.value, decided_at, row["id"]),
+        )
+        conn.commit()
+        approval = _row_to_approval(row)
+        approval.status = status.value
+        approval.decided_at = decided_at
+        return approval
+    finally:
+        conn.close()
+
+
+def list_approvals_for_run(db_path: str, run_id: int) -> List[Approval]:
+    """Return all approvals for ``run_id`` ordered by id."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM approvals WHERE run_id = ? ORDER BY id ASC", (run_id,)
+        ).fetchall()
+        return [_row_to_approval(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def _row_to_run(row: sqlite3.Row) -> StoredRun:
     return StoredRun(
         id=row["id"],
@@ -253,4 +349,16 @@ def _row_to_step(row: sqlite3.Row) -> StoredStep:
         started_at=row["started_at"],
         finished_at=row["finished_at"],
         next_prompt=row["next_prompt"],
+    )
+
+
+def _row_to_approval(row: sqlite3.Row) -> Approval:
+    return Approval(
+        id=row["id"],
+        run_id=row["run_id"],
+        step_id=row["step_id"],
+        next_prompt=row["next_prompt"],
+        status=row["status"],
+        created_at=row["created_at"],
+        decided_at=row["decided_at"],
     )
