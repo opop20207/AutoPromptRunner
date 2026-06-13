@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 from ..models import AgentResult
 from .base import AgentRunner
@@ -26,7 +27,7 @@ class MockRunner(AgentRunner):
     def name(self) -> str:
         return "mock"
 
-    def run(self, prompt: str) -> AgentResult:
+    def run(self, prompt: str, run_id: Optional[int] = None) -> AgentResult:
         started_at = _now_iso()
         stdout = (
             "[mock] AutoPromptRunner MockRunner\n"

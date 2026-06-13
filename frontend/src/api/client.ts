@@ -119,6 +119,15 @@ export const api = {
   listQueue: () => request<QueueJob[]>("/queue"),
   cancelQueueJob: (runId: number) =>
     request<{ run_id: number; cancelled: boolean }>(`/queue/${runId}/cancel`, { method: "POST" }),
+  cancelRun: (runId: number, reason?: string) =>
+    request<{
+      run_id: number;
+      run_status: string;
+      cancelled: boolean;
+      terminated: boolean;
+      reason: string | null;
+      message: string;
+    }>(`/runs/${runId}/cancel`, { method: "POST", body: JSON.stringify({ reason: reason ?? null }) }),
 };
 
 export function errorMessage(err: unknown): string {

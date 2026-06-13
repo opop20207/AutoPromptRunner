@@ -26,7 +26,7 @@ from autoprompt_runner import __version__, locks, storage  # noqa: E402
 from autoprompt_runner.cli import main  # noqa: E402
 from autoprompt_runner.state import RunStatus  # noqa: E402
 
-_SUBPROCESS_RUN = "autoprompt_runner.runners.claude_code.subprocess.run"
+_SUBPROCESS_RUN = "autoprompt_runner.runners.claude_code.subprocess.Popen"
 
 
 def run_cli(argv):
@@ -283,7 +283,7 @@ class ArtifactCliTests(_DbTestCase):
 
 
 class CodexProviderTests(_DbTestCase):
-    _CODEX_RUN = "autoprompt_runner.runners.codex.subprocess.run"
+    _CODEX_RUN = "autoprompt_runner.runners.codex.subprocess.Popen"
 
     def test_run_codex_requires_workspace(self):
         code, out, err = run_cli(["run", "--prompt", "x", "--provider", "codex", "--db-path", self.db])
@@ -638,6 +638,29 @@ class QueueWorkerCliTests(unittest.TestCase):
         code, out, err = run_cli(["worker", "run", "--once", "--db-path", self.db])
         self.assertEqual(code, 0)
         self.assertIn("no queued jobs", out)
+
+    def test_run_cancel_queued_run(self):
+        self._queue()
+        run_id = self._latest_run_id()
+        code, out, err = run_cli(["run", "cancel", "--run-id", str(run_id), "--reason", "stop", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Cancelled", out)
+        self.assertEqual(storage.get_run(self.db, run_id).status, "STOPPED")
+        self.assertEqual(storage.get_job_by_run_id(self.db, run_id).status, "CANCELLED")
+        self.assertEqual(storage.get_cancellation_for_run(self.db, run_id).status, "COMPLETED")
+
+    def test_run_cancel_missing_run_exits_nonzero(self):
+        code, out, err = run_cli(["run", "cancel", "--run-id", "9999", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err.lower())
+
+    def test_queue_cancel_uses_cancellation_service(self):
+        self._queue()
+        run_id = self._latest_run_id()
+        code, out, err = run_cli(["queue", "cancel", "--run-id", str(run_id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Cancelled", out)
+        self.assertEqual(storage.get_run(self.db, run_id).status, "STOPPED")
 
 
 if __name__ == "__main__":

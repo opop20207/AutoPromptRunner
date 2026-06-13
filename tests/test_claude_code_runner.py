@@ -1,8 +1,8 @@
 """Tests for ClaudeCodeRunner.
 
 These tests never require a real ``claude`` executable: command-not-found is exercised
-with a name that does not exist, and the success/timeout paths patch
-``subprocess.run``. Standard-library only (unittest + tempfile + unittest.mock).
+with a name that does not exist, and the success/timeout paths patch ``subprocess.Popen``
+with a fake process. Standard-library only (unittest + tempfile + unittest.mock).
 """
 
 from __future__ import annotations
@@ -21,7 +21,36 @@ if _SRC not in sys.path:
 from autoprompt_runner.models import AgentResult  # noqa: E402
 from autoprompt_runner.runners import ClaudeCodeRunner  # noqa: E402
 
-_PATCH_TARGET = "autoprompt_runner.runners.claude_code.subprocess.run"
+_PATCH_TARGET = "autoprompt_runner.runners.claude_code.subprocess.Popen"
+
+
+class _FakePopen:
+    """A minimal stand-in for subprocess.Popen used by the runner tests."""
+
+    def __init__(self, stdout="", stderr="", returncode=0, timeout=False):
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode = returncode
+        self._timeout = timeout
+        self._killed = False
+
+    def communicate(self, timeout=None):
+        if self._timeout and timeout is not None and not self._killed:
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+        return self._stdout, self._stderr
+
+    def kill(self):
+        self._killed = True
+        self.returncode = -9
+
+    def terminate(self):
+        self._killed = True
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode if self._killed else None
 
 
 class ClaudeCodeRunnerTests(unittest.TestCase):
@@ -41,7 +70,6 @@ class ClaudeCodeRunnerTests(unittest.TestCase):
             ClaudeCodeRunner(workspace=bad)
 
     def test_none_workspace_is_allowed(self):
-        # Construction with no workspace is permitted (the CLI enforces it instead).
         runner = ClaudeCodeRunner(workspace=None)
         self.assertEqual(runner.name, "claude-code")
 
@@ -55,32 +83,27 @@ class ClaudeCodeRunnerTests(unittest.TestCase):
         self.assertTrue(result.finished_at)
 
     def test_successful_run_captures_output_and_invocation(self):
-        fake = subprocess.CompletedProcess(args=["claude", "-p", "hi there"], returncode=0, stdout="done", stderr="")
-        with mock.patch(_PATCH_TARGET, return_value=fake) as run_mock:
+        with mock.patch(_PATCH_TARGET, return_value=_FakePopen(stdout="done", returncode=0)) as popen_mock:
             runner = ClaudeCodeRunner(command="claude", timeout_seconds=42, workspace=self.ws)
             result = runner.run("hi there")
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.stdout, "done")
-        args, kwargs = run_mock.call_args
+        args, kwargs = popen_mock.call_args
         self.assertEqual(args[0], ["claude", "-p", "hi there"])
         self.assertEqual(kwargs["cwd"], self.ws)
-        self.assertTrue(kwargs["capture_output"])
+        self.assertEqual(kwargs["stdout"], subprocess.PIPE)
+        self.assertEqual(kwargs["stderr"], subprocess.PIPE)
         self.assertTrue(kwargs["text"])
-        self.assertEqual(kwargs["timeout"], 42)
         self.assertFalse(kwargs.get("shell", False))
 
     def test_nonzero_exit_is_captured(self):
-        fake = subprocess.CompletedProcess(args=["claude", "-p", "x"], returncode=2, stdout="", stderr="boom")
-        with mock.patch(_PATCH_TARGET, return_value=fake):
+        with mock.patch(_PATCH_TARGET, return_value=_FakePopen(stderr="boom", returncode=2)):
             result = ClaudeCodeRunner(command="claude", workspace=self.ws).run("x")
         self.assertEqual(result.exit_code, 2)
         self.assertIn("boom", result.stderr)
 
     def test_timeout_returns_clean_result(self):
-        def _raise_timeout(*args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd="claude", timeout=1)
-
-        with mock.patch(_PATCH_TARGET, side_effect=_raise_timeout):
+        with mock.patch(_PATCH_TARGET, return_value=_FakePopen(timeout=True)):
             result = ClaudeCodeRunner(command="claude", timeout_seconds=1, workspace=self.ws).run("hi")
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("timed out", result.stderr.lower())

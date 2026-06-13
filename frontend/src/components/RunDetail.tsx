@@ -5,6 +5,7 @@ import type { RunDetail as RunDetailData } from "../types";
 import { ApprovalPanel } from "./ApprovalPanel";
 import { ArtifactList } from "./ArtifactList";
 import { ArtifactViewer } from "./ArtifactViewer";
+import { CancelPanel } from "./CancelPanel";
 import { ChangedFilesPanel } from "./ChangedFilesPanel";
 import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
@@ -77,6 +78,8 @@ export function RunDetail({
               <dd className="status">{detail.status}</dd>
               <dt>Queue</dt>
               <dd>{detail.queue_status ?? "(not queued)"}</dd>
+              <dt>Cancellation</dt>
+              <dd>{detail.cancellation_status ?? "(none)"}</dd>
               <dt>Provider</dt>
               <dd>{detail.provider}</dd>
               <dt>Workspace</dt>
@@ -110,6 +113,11 @@ export function RunDetail({
           <div className="subsection">
             <h3>Queue</h3>
             <QueuePanel runId={detail.id} refreshKey={artifactRefresh} />
+          </div>
+
+          <div className="subsection">
+            <h3>Cancel</h3>
+            <CancelPanel run={detail} onCancelled={onChanged} />
           </div>
 
           <div className="subsection">

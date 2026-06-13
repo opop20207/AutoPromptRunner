@@ -19,6 +19,7 @@ from .models import (
     Artifact,
     Project,
     QueueJob,
+    RunCancellation,
     RunLock,
     StoredRun,
     StoredStep,
@@ -46,6 +47,11 @@ QUEUE_FAILED = "FAILED"
 QUEUE_CANCELLED = "CANCELLED"
 # Statuses for which a run may not be enqueued again (it already has an active job).
 _QUEUE_ACTIVE_STATUSES = (QUEUE_QUEUED, QUEUE_RUNNING)
+
+# Run-cancellation statuses (mirrored as constants in autoprompt_runner.cancel).
+CANCELLATION_REQUESTED = "REQUESTED"
+CANCELLATION_COMPLETED = "COMPLETED"
+CANCELLATION_FAILED = "FAILED"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -176,6 +182,19 @@ CREATE TABLE IF NOT EXISTS run_queue (
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_queue_status ON run_queue (status, priority, created_at);
+
+CREATE TABLE IF NOT EXISTS run_cancellations (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT,
+    requested_at TEXT NOT NULL,
+    completed_at TEXT,
+    error TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_cancellations_run ON run_cancellations (run_id);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1208,6 +1227,78 @@ def list_queue(db_path: str, limit: int = 50) -> List[QueueJob]:
         conn.close()
 
 
+# -- run cancellations -------------------------------------------------------
+
+
+def request_run_cancellation(db_path: str, run_id: int, reason: Optional[str] = None) -> int:
+    """Insert a REQUESTED cancellation for ``run_id`` and return its id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "INSERT INTO run_cancellations (run_id, status, reason, requested_at) VALUES (?, ?, ?, ?)",
+            (int(run_id), CANCELLATION_REQUESTED, reason, _utcnow_iso()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def get_cancellation_for_run(db_path: str, run_id: int) -> Optional[RunCancellation]:
+    """Return the most recent cancellation for ``run_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM run_cancellations WHERE run_id = ? ORDER BY id DESC LIMIT 1", (int(run_id),)
+        ).fetchone()
+        return _row_to_cancellation(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def complete_run_cancellation(db_path: str, cancellation_id: int) -> None:
+    """Mark a cancellation COMPLETED and stamp ``completed_at``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE run_cancellations SET status = ?, completed_at = ? WHERE id = ?",
+            (CANCELLATION_COMPLETED, _utcnow_iso(), int(cancellation_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fail_run_cancellation(db_path: str, cancellation_id: int, error: Optional[str] = None) -> None:
+    """Mark a cancellation FAILED, stamp ``completed_at``, and record ``error``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE run_cancellations SET status = ?, completed_at = ?, error = ? WHERE id = ?",
+            (CANCELLATION_FAILED, _utcnow_iso(), error, int(cancellation_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_cancellations(db_path: str, limit: int = 50) -> List[RunCancellation]:
+    """Return up to ``limit`` cancellations, newest first."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM run_cancellations ORDER BY id DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+        return [_row_to_cancellation(row) for row in rows]
+    finally:
+        conn.close()
+
+
 # -- run logs (for polling) --------------------------------------------------
 
 _LOG_TAIL_LIMIT = 4000
@@ -1401,4 +1492,16 @@ def _row_to_queue_job(row: sqlite3.Row) -> QueueJob:
         started_at=_opt(row, "started_at"),
         finished_at=_opt(row, "finished_at"),
         last_error=_opt(row, "last_error"),
+    )
+
+
+def _row_to_cancellation(row: sqlite3.Row) -> RunCancellation:
+    return RunCancellation(
+        id=row["id"],
+        run_id=row["run_id"],
+        status=row["status"],
+        reason=_opt(row, "reason"),
+        requested_at=row["requested_at"],
+        completed_at=_opt(row, "completed_at"),
+        error=_opt(row, "error"),
     )

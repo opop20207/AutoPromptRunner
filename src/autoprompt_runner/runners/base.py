@@ -8,6 +8,7 @@ adapter that satisfies this interface, without changing the calling code.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
 from ..models import AgentResult
 
@@ -27,11 +28,13 @@ class AgentRunner(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def run(self, prompt: str) -> AgentResult:
+    def run(self, prompt: str, run_id: Optional[int] = None) -> AgentResult:
         """Execute ``prompt`` and return a captured :class:`AgentResult`.
 
         Implementations must always populate ``stdout``, ``stderr``, ``exit_code``,
         ``started_at``, and ``finished_at`` -- including on failure. A non-zero exit
-        code is a result to record and report, not an error to raise.
+        code is a result to record and report, not an error to raise. ``run_id``, when
+        given, lets a subprocess-based runner register its process so the run can be
+        cancelled (see ``autoprompt_runner.processes``).
         """
         raise NotImplementedError

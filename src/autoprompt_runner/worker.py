@@ -15,8 +15,12 @@ from typing import Callable, Optional
 
 from . import queue, storage
 from .services.run_service import RunService
+from .state import RunStatus
 
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+
+# Run statuses for which a claimed job must not be executed (already cancelled/finished).
+_TERMINAL_RUN_STATUSES = {RunStatus.DONE.value, RunStatus.FAILED.value, RunStatus.STOPPED.value}
 
 
 class LocalWorker:
@@ -38,6 +42,13 @@ class LocalWorker:
         job = queue.claim_next_job(self.db_path)
         if job is None:
             return False
+        # Skip a job whose run was cancelled/stopped between enqueue and claim.
+        run = storage.get_run(self.db_path, job.run_id)
+        if run is None or run.status in _TERMINAL_RUN_STATUSES:
+            status = run.status if run is not None else "missing"
+            queue.fail_job(self.db_path, job.id, f"run {job.run_id} is {status}; not executed")
+            self.log(f"worker: job {job.id} skipped (run {job.run_id} is {status})")
+            return True
         self.log(f"worker: running job {job.id} (run {job.run_id})")
         try:
             report = self.service.execute_queued_run(job.run_id)

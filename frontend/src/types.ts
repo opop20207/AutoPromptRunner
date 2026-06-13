@@ -155,6 +155,11 @@ export interface RunLock {
   expires_at?: string | null;
 }
 
+export type CancellationStatus = "REQUESTED" | "COMPLETED" | "FAILED";
+
+// Run statuses for which a run can still be cancelled (non-terminal).
+export const CANCELLABLE_RUN_STATUSES: RunStatus[] = ["CREATED", "RUNNING", "WAITING_APPROVAL"];
+
 export type QueueStatus = "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "CANCELLED";
 
 export interface QueueJob {
@@ -238,4 +243,6 @@ export interface RunDetail {
   artifacts: ArtifactSummary[];
   queue_status?: string | null;
   queue_job_id?: number | null;
+  cancellation_status?: string | null;
+  cancellation_reason?: string | null;
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
-import type { RunSummary } from "../types";
+import { CANCELLABLE_RUN_STATUSES, type RunSummary } from "../types";
 import { Section } from "./Layout";
 
 function shorten(text: string, limit = 50): string {
@@ -23,6 +23,7 @@ export function RunList({
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -39,6 +40,20 @@ export function RunList({
   useEffect(() => {
     void load();
   }, [refreshKey]);
+
+  async function cancel(id: number) {
+    if (!window.confirm(`Cancel run #${id}?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelRun(id);
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Section
@@ -62,6 +77,7 @@ export function RunList({
               <th>Provider</th>
               <th>Created</th>
               <th>Prompt</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -75,6 +91,20 @@ export function RunList({
                 <td>{run.provider}</td>
                 <td className="mono">{run.created_at}</td>
                 <td>{shorten(run.prompt)}</td>
+                <td>
+                  {CANCELLABLE_RUN_STATUSES.includes(run.status) && (
+                    <button
+                      className="danger"
+                      disabled={busy}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void cancel(run.id);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

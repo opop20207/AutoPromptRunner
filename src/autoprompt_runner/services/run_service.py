@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, config, locks, safety, storage, templates, worktrees
+from .. import artifacts, cancel, config, locks, processes, safety, storage, templates, worktrees
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
 from ..projects import ResolvedRunSettings, resolve_run_settings
@@ -425,6 +425,60 @@ class RunService:
             message="rejected",
         )
 
+    def cancel_run(self, run_id: int, reason: Optional[str] = None) -> cancel.CancelResult:
+        """Cancel a queued, running, or waiting run and stop it.
+
+        Queued -> cancel the queue job; waiting -> reject the pending approval; running ->
+        best-effort terminate of a locally-registered agent process. In every non-terminal
+        case the run is moved to STOPPED, its workspace lock is released, and a
+        ``cancellation`` artifact is recorded. A terminal run is a clean error.
+        """
+        run = storage.get_run(self.db_path, run_id)
+        if run is None:
+            raise RunServiceError(f"run {run_id} not found", kind="not_found")
+        if run.status in _TERMINAL_VALUES:
+            raise RunServiceError(f"run {run_id} is already {run.status}; cannot cancel", kind="terminal")
+
+        cancellation_id = storage.request_run_cancellation(self.db_path, run_id, reason)
+        self._store_cancellation_artifact(run_id, reason)
+        job = storage.get_job_by_run_id(self.db_path, run_id)
+        terminated = False
+        try:
+            if run.status == RunStatus.RUNNING.value:
+                # Best-effort: only reaches a process registered in *this* process.
+                terminated = processes.terminate_process(run_id)
+            if job is not None and job.status == storage.QUEUE_QUEUED:
+                storage.cancel_job(self.db_path, run_id)
+            if run.status == RunStatus.WAITING_APPROVAL.value:
+                if storage.get_pending_approval(self.db_path, run_id) is not None:
+                    storage.reject_pending_approval(self.db_path, run_id)
+            storage.update_run_status(self.db_path, run_id, RunStatus.STOPPED.value)
+            self._release_workspace_lock(run_id, run.workspace)
+            storage.complete_run_cancellation(self.db_path, cancellation_id)
+        except Exception as exc:  # noqa: BLE001  (record the failure, then surface it cleanly)
+            storage.fail_run_cancellation(self.db_path, cancellation_id, str(exc))
+            self._store_cancellation_error_artifact(run_id, str(exc))
+            raise RunServiceError(f"cancellation failed for run {run_id}: {exc}") from exc
+        return cancel.CancelResult(
+            run_id=run_id,
+            run_status=RunStatus.STOPPED.value,
+            cancelled=True,
+            terminated=terminated,
+            reason=reason,
+            message="run cancelled and stopped",
+        )
+
+    def _store_cancellation_artifact(self, run_id: int, reason: Optional[str]) -> None:
+        storage.create_artifact(
+            self.db_path, run_id=run_id, artifact_type=cancel.CANCELLATION_ARTIFACT,
+            content=reason or "run cancellation requested",
+        )
+
+    def _store_cancellation_error_artifact(self, run_id: int, error: str) -> None:
+        storage.create_artifact(
+            self.db_path, run_id=run_id, artifact_type=cancel.CANCELLATION_ERROR_ARTIFACT, content=error,
+        )
+
     # -- internals ------------------------------------------------------------
 
     def _make_runner(self, provider: str, workspace: Optional[str], timeout_seconds: Optional[int]) -> AgentRunner:
@@ -441,6 +495,18 @@ class RunService:
             return locks.acquire_lock(self.db_path, workspace, run_id, timeout_seconds=timeout_seconds)
         except locks.LockConflictError as exc:
             raise WorkspaceLockedError(run_id, exc.workspace_path, exc.holder_run_id) from exc
+
+    def _run_was_cancelled(self, run_id: int) -> bool:
+        """True if the run has been moved to STOPPED (e.g. by ``cancel_run``)."""
+        run = storage.get_run(self.db_path, run_id)
+        return run is not None and run.status == RunStatus.STOPPED.value
+
+    def _cancelled_report(self, run_id: int, loop_index: int, provider: str) -> StepExecutionReport:
+        steps = storage.get_steps_for_run(self.db_path, run_id)
+        return StepExecutionReport(
+            run_id=run_id, run_status=RunStatus.STOPPED.value, loop_index=loop_index,
+            provider=provider, step_id=steps[-1].id if steps else None, message="cancelled",
+        )
 
     def _release_workspace_lock(self, run_id: int, workspace: Optional[str]) -> None:
         """Release this run's workspace lock if one is held (no-op without a workspace)."""
@@ -468,10 +534,13 @@ class RunService:
         the Git signal into the next-prompt generator.
         """
         while True:
+            # Stop cleanly if the run was cancelled (STOPPED) before this iteration.
+            if self._run_was_cancelled(run_id):
+                return self._cancelled_report(run_id, loop_index, provider)
             git_capture = artifacts.workspace_is_git(workspace)
             status_before = artifacts.capture_git_status(workspace) if git_capture else ""
             runner = self._make_runner(provider, workspace, timeout_seconds)
-            result = runner.run(prompt)
+            result = runner.run(prompt, run_id=run_id)
             loops_done = loop_index + 1
 
             # Capture Git artifacts once; reuse them for both storage and the generator.
@@ -495,6 +564,17 @@ class RunService:
             # Safety from the captured change set (names / diff stats only, no contents).
             safety_warnings = safety.build_safety_warnings(changed_files=changed_files, diff_stat=diff_stat)
             risky = safety.detect_risky_run(prompt, changed_files, diff_stat) is not None
+
+            # Honor a cancellation that landed while this step executed: record the step +
+            # artifacts but do not overwrite the externally-set STOPPED status.
+            if self._run_was_cancelled(run_id):
+                step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.STOPPED.value, None)
+                self._store_artifacts(run_id, step_id, git_payloads, result)
+                self._store_warnings(run_id, step_id, safety_warnings)
+                return StepExecutionReport(
+                    run_id=run_id, run_status=RunStatus.STOPPED.value, loop_index=loop_index,
+                    provider=provider, step_id=step_id, exit_code=result.exit_code, message="cancelled",
+                )
 
             if result.exit_code != 0:
                 nxt = self.generator.generate(context)

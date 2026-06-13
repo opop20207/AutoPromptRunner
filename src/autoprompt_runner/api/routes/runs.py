@@ -88,6 +88,19 @@ def _queue_fields(db_path: str, run_id: int) -> tuple:
     return job.status, job.id
 
 
+class CancelRunRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class CancelRunResponse(BaseModel):
+    run_id: int
+    run_status: str
+    cancelled: bool
+    terminated: bool
+    reason: Optional[str] = None
+    message: str
+
+
 def _short(text: Optional[str], limit: int = _PREVIEW_LIMIT) -> str:
     collapsed = " ".join((text or "").split())
     if len(collapsed) <= limit:
@@ -226,6 +239,7 @@ def get_run(run_id: int, db_path: str = Depends(get_db_path)) -> RunDetailRespon
     pending = storage.get_pending_approval(db_path, run_id)
     run_artifacts = storage.list_artifacts_for_run(db_path, run_id)
     queue_status, queue_job_id = _queue_fields(db_path, run_id)
+    cancellation = storage.get_cancellation_for_run(db_path, run_id)
     return RunDetailResponse(
         id=run.id, status=run.status, provider=run.provider, workspace=run.workspace,
         prompt=run.root_prompt, max_loops=run.max_loops, require_approval=run.require_approval,
@@ -234,6 +248,26 @@ def get_run(run_id: int, db_path: str = Depends(get_db_path)) -> RunDetailRespon
         pending_approval=_approval_response(pending) if pending is not None else None,
         artifacts=[_artifact_summary(artifact) for artifact in run_artifacts],
         queue_status=queue_status, queue_job_id=queue_job_id,
+        cancellation_status=cancellation.status if cancellation is not None else None,
+        cancellation_reason=cancellation.reason if cancellation is not None else None,
+    )
+
+
+@router.post("/runs/{run_id}/cancel", response_model=CancelRunResponse)
+def cancel_run(
+    run_id: int,
+    body: Optional[CancelRunRequest] = None,
+    db_path: str = Depends(get_db_path),
+) -> CancelRunResponse:
+    reason = body.reason if body is not None else None
+    try:
+        result = RunService(db_path).cancel_run(run_id, reason=reason)
+    except RunServiceError as exc:
+        status_code = 404 if exc.kind == "not_found" else 409 if exc.kind == "terminal" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc))
+    return CancelRunResponse(
+        run_id=result.run_id, run_status=result.run_status, cancelled=result.cancelled,
+        terminated=result.terminated, reason=result.reason, message=result.message,
     )
 
 

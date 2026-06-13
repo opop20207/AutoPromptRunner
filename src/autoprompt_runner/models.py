@@ -159,6 +159,25 @@ class QueueJob:
 
 
 @dataclass
+class RunCancellation:
+    """A cancellation request for a run, persisted in ``run_cancellations``.
+
+    Records that a user asked to stop a queued / running / waiting run. ``status`` is
+    ``REQUESTED`` / ``COMPLETED`` / ``FAILED`` (see ``autoprompt_runner.cancel``).
+    Cancelling a queued or waiting run is deterministic; force-stopping an already-running
+    external process is best-effort and only works inside the worker that launched it.
+    """
+
+    id: int
+    run_id: int
+    status: str
+    reason: Optional[str]
+    requested_at: str
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

@@ -113,6 +113,8 @@ class RunDetailResponse(BaseModel):
     artifacts: List[ArtifactSummaryResponse] = []
     queue_status: Optional[str] = None
     queue_job_id: Optional[int] = None
+    cancellation_status: Optional[str] = None
+    cancellation_reason: Optional[str] = None
 
 
 class ArtifactDetailResponse(BaseModel):

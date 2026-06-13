@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from os import path as _ospath
 from typing import List, Optional
 
-from .. import config
+from .. import config, processes
 from ..models import AgentResult
 from .base import AgentRunner
 
@@ -24,6 +24,7 @@ from .base import AgentRunner
 _EXIT_TIMEOUT = 124
 _EXIT_NOT_FOUND = 127
 _EXIT_LAUNCH_ERROR = 1
+_EXIT_CANCELLED = 130
 
 
 def _now_iso() -> str:
@@ -75,25 +76,19 @@ class CodexRunner(AgentRunner):
         # shell string), so no quoting/injection concerns arise.
         return [self.command, "exec", prompt]
 
-    def run(self, prompt: str) -> AgentResult:
+    def run(self, prompt: str, run_id: Optional[int] = None) -> AgentResult:
         started_at = _now_iso()
         argv = self._build_argv(prompt)
+        # subprocess.Popen (not subprocess.run) so the process can be registered and
+        # cancelled while it runs. No shell is used.
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 argv,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=self.workspace,
                 shell=False,
-                check=False,
-            )
-            return AgentResult(
-                stdout=completed.stdout or "",
-                stderr=completed.stderr or "",
-                exit_code=completed.returncode,
-                started_at=started_at,
-                finished_at=_now_iso(),
+                text=True,
             )
         except FileNotFoundError:
             return AgentResult(
@@ -106,17 +101,6 @@ class CodexRunner(AgentRunner):
                 started_at=started_at,
                 finished_at=_now_iso(),
             )
-        except subprocess.TimeoutExpired as exc:
-            partial = _as_text(exc.stderr)
-            message = f"codex: timed out after {self.timeout_seconds}s"
-            stderr = f"{partial}\n{message}".strip() if partial else message
-            return AgentResult(
-                stdout=_as_text(exc.stdout),
-                stderr=stderr,
-                exit_code=_EXIT_TIMEOUT,
-                started_at=started_at,
-                finished_at=_now_iso(),
-            )
         except OSError as exc:
             return AgentResult(
                 stdout="",
@@ -125,3 +109,33 @@ class CodexRunner(AgentRunner):
                 started_at=started_at,
                 finished_at=_now_iso(),
             )
+
+        if run_id is not None:
+            processes.register_process(run_id, process)
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=self.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+                message = f"codex: timed out after {self.timeout_seconds}s"
+                combined = f"{_as_text(stderr)}\n{message}".strip() if stderr else message
+                return AgentResult(
+                    stdout=_as_text(stdout), stderr=combined, exit_code=_EXIT_TIMEOUT,
+                    started_at=started_at, finished_at=_now_iso(),
+                )
+            if run_id is not None and processes.was_terminated(run_id):
+                message = "codex: run cancelled"
+                combined = f"{_as_text(stderr)}\n{message}".strip() if stderr else message
+                return AgentResult(
+                    stdout=_as_text(stdout), stderr=combined, exit_code=_EXIT_CANCELLED,
+                    started_at=started_at, finished_at=_now_iso(),
+                )
+            return AgentResult(
+                stdout=_as_text(stdout), stderr=_as_text(stderr), exit_code=process.returncode,
+                started_at=started_at, finished_at=_now_iso(),
+            )
+        finally:
+            if run_id is not None:
+                processes.unregister_process(run_id)
+                processes.clear_terminated(run_id)

@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, locks, queue, safety, storage, templates, worker, worktrees
+from . import __version__, cancel, locks, queue, safety, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -146,6 +146,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create and enqueue the run for a background worker instead of running it now.",
     )
     _add_db_path(run_parser)
+
+    # `run cancel --run-id N` cancels a run; `run` without a subcommand starts one.
+    run_sub = run_parser.add_subparsers(dest="run_command", metavar="subcommand")
+    run_cancel_parser = run_sub.add_parser("cancel", help="Cancel a queued/running/waiting run and stop it.")
+    run_cancel_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id to cancel.")
+    run_cancel_parser.add_argument("--reason", default=None, help="Optional human-readable cancellation reason.")
+    _add_db_path(run_cancel_parser)
 
     approve_parser = subparsers.add_parser(
         "approve-next", help="Approve a run's pending next prompt and execute it."
@@ -788,23 +795,25 @@ def cmd_queue_list(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cancel_and_report(args: argparse.Namespace, default_reason: str) -> int:
+    """Cancel a run via the cancellation service and print a compact result."""
+    service = RunService(args.db_path)
+    try:
+        result = service.cancel_run(args.run_id, reason=getattr(args, "reason", None) or default_reason)
+    except RunServiceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND if exc.kind == "not_found" else EXIT_USAGE
+    note = "" if result.terminated else " (no local agent process was terminated)"
+    print(f"Cancelled run {result.run_id} -> {result.run_status}.{note}")
+    return EXIT_OK
+
+
+def cmd_run_cancel(args: argparse.Namespace) -> int:
+    return _cancel_and_report(args, default_reason="cancelled via CLI")
+
+
 def cmd_queue_cancel(args: argparse.Namespace) -> int:
-    db_path = storage.init_db(args.db_path)
-    result = queue.cancel(db_path, args.run_id)
-    if result == queue.CANCEL_CANCELLED:
-        print(f"Cancelled queued job for run {args.run_id}.")
-        return EXIT_OK
-    if result == queue.CANCEL_RUNNING:
-        print(
-            f"error: run {args.run_id} job is already running; process cancellation is not implemented yet",
-            file=sys.stderr,
-        )
-        return EXIT_USAGE
-    if result == queue.CANCEL_NOT_FOUND:
-        print(f"error: no queue job for run {args.run_id}", file=sys.stderr)
-        return EXIT_NOT_FOUND
-    print(f"error: run {args.run_id} job is not cancellable (already finished)", file=sys.stderr)
-    return EXIT_USAGE
+    return _cancel_and_report(args, default_reason="cancelled via queue cancel")
 
 
 def _dispatch_queue(args: argparse.Namespace) -> int:
@@ -982,6 +991,19 @@ def cmd_show_run(args: argparse.Namespace) -> int:
         last_next = next((s.next_prompt for s in reversed(steps) if s.next_prompt), None)
         if last_next:
             print(f"Next prompt : {_shorten(last_next, 100)}")
+
+    cancellation = storage.get_cancellation_for_run(db_path, run.id)
+    if cancellation is not None:
+        print("Cancellation:")
+        print(f"  status      : {cancellation.status}")
+        print(f"  requested_at: {cancellation.requested_at}")
+        if cancellation.reason:
+            print(f"  reason      : {_shorten(cancellation.reason, 80)}")
+        if cancellation.error:
+            print(f"  error       : {_shorten(cancellation.error, 80)}")
+        latest = storage.get_latest_artifact_by_type(db_path, run.id, cancel.CANCELLATION_ARTIFACT)
+        if latest is not None and latest.content:
+            print(f"  artifact    : {_shorten(latest.content, 80)}")
     return EXIT_OK
 
 
@@ -1121,6 +1143,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "worker":
         return _dispatch_worker(args)
     if args.command == "run":
+        if getattr(args, "run_command", None) == "cancel":
+            return cmd_run_cancel(args)
         return cmd_run(args)
     if args.command == "approve-next":
         return cmd_approve_next(args)

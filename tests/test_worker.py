@@ -76,6 +76,13 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(storage.get_run(self.db, run1).status, RunStatus.DONE.value)
         self.assertEqual(storage.get_run(self.db, run2).status, RunStatus.DONE.value)
 
+    def test_worker_skips_cancelled_job(self):
+        run_id = self._queue_run()
+        self.service.cancel_run(run_id)  # cancels the queue job and stops the run
+        self.assertFalse(self.worker.run_once())  # no QUEUED job remains to claim
+        self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.STOPPED.value)
+        self.assertEqual(len(storage.get_steps_for_run(self.db, run_id)), 0)  # never executed
+
 
 if __name__ == "__main__":
     unittest.main()

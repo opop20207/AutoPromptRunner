@@ -28,11 +28,11 @@ export function QueuePanel({ runId, refreshKey }: { runId?: number; refreshKey?:
   }, [refreshKey]);
 
   async function cancel(jobRunId: number) {
-    if (!window.confirm(`Cancel the queued job for run ${jobRunId}?`)) return;
+    if (!window.confirm(`Cancel run ${jobRunId}?`)) return;
     setBusy(true);
     setError(null);
     try {
-      await api.cancelQueueJob(jobRunId);
+      await api.cancelRun(jobRunId); // uses the run cancellation service
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -47,7 +47,11 @@ export function QueuePanel({ runId, refreshKey }: { runId?: number; refreshKey?:
     <div>
       {error && <p className="error">{error}</p>}
       {loading && <p className="muted">Loading…</p>}
-      {hasRunning && <p className="muted">Running jobs cannot be killed yet — only QUEUED jobs can be cancelled.</p>}
+      {hasRunning && (
+        <p className="muted">
+          Cancelling a RUNNING job is best-effort — the worker process is force-stopped only if it is local.
+        </p>
+      )}
       {!loading && !error && jobs.length === 0 && <p className="muted">No queue jobs.</p>}
       {jobs.length > 0 && (
         <table className="table">
@@ -80,7 +84,7 @@ export function QueuePanel({ runId, refreshKey }: { runId?: number; refreshKey?:
                 <td className="mono">{job.started_at ?? "—"}</td>
                 <td className="mono">{job.finished_at ?? "—"}</td>
                 <td>
-                  {job.status === "QUEUED" && (
+                  {(job.status === "QUEUED" || job.status === "RUNNING") && (
                     <button className="danger" disabled={busy} onClick={() => void cancel(job.run_id)}>
                       Cancel
                     </button>

@@ -16,7 +16,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import locks, storage  # noqa: E402
+from autoprompt_runner import locks, queue, storage  # noqa: E402
 from autoprompt_runner.approvals import ApprovalStatus  # noqa: E402
 from autoprompt_runner.models import AgentResult, NextPrompt  # noqa: E402
 from autoprompt_runner.runners.base import AgentRunner  # noqa: E402
@@ -32,7 +32,7 @@ class FailingRunner(AgentRunner):
     def name(self) -> str:
         return "mock"
 
-    def run(self, prompt: str) -> AgentResult:
+    def run(self, prompt: str, run_id=None) -> AgentResult:
         return AgentResult(
             stdout="", stderr="boom: process crashed", exit_code=1,
             started_at="t0", finished_at="t1",
@@ -340,6 +340,60 @@ class QueueExecutionTests(unittest.TestCase):
         with self.assertRaises(WorkspaceLockedError):
             self.svc.execute_queued_run(run_id)
         self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.FAILED.value)
+
+
+class CancelRunTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+        self.svc = RunService(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_cancel_queued_run(self):
+        run_id = self.svc.create_run_only("p", "mock", 1, require_approval=False)
+        queue.enqueue(self.db, run_id)
+        result = self.svc.cancel_run(run_id, reason="user stop")
+        self.assertTrue(result.cancelled)
+        self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.STOPPED.value)
+        self.assertEqual(storage.get_job_by_run_id(self.db, run_id).status, storage.QUEUE_CANCELLED)
+        self.assertEqual(storage.get_cancellation_for_run(self.db, run_id).status, storage.CANCELLATION_COMPLETED)
+
+    def test_cancel_creates_artifact(self):
+        run_id = self.svc.create_run_only("p", "mock", 1, require_approval=False)
+        queue.enqueue(self.db, run_id)
+        self.svc.cancel_run(run_id, reason="stop")
+        self.assertTrue(storage.list_artifacts_for_run(self.db, run_id, artifact_type="cancellation"))
+
+    def test_cancel_waiting_approval_run(self):
+        run_id = self.svc.create_and_execute_run("p", "mock", 3, require_approval=True).run_id
+        self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.WAITING_APPROVAL.value)
+        self.svc.cancel_run(run_id)
+        self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.STOPPED.value)
+        self.assertIsNone(storage.get_pending_approval(self.db, run_id))  # pending approval cleared
+
+    def test_cancel_terminal_run_clean_error(self):
+        run_id = self.svc.create_and_execute_run("p", "mock", 1, require_approval=False).run_id  # -> DONE
+        with self.assertRaises(RunServiceError) as ctx:
+            self.svc.cancel_run(run_id)
+        self.assertEqual(ctx.exception.kind, "terminal")
+
+    def test_cancel_missing_run_not_found(self):
+        with self.assertRaises(RunServiceError) as ctx:
+            self.svc.cancel_run(9999)
+        self.assertEqual(ctx.exception.kind, "not_found")
+
+    def test_cancel_releases_lock(self):
+        ws = os.path.join(self._tmp.name, "ws")
+        os.makedirs(ws)
+        run_id = self.svc.create_run_only("p", "mock", 1, require_approval=False, workspace=ws)
+        locks.acquire_lock(self.db, ws, run_id, timeout_seconds=60)
+        storage.update_run_status(self.db, run_id, RunStatus.RUNNING.value)  # simulate a running, locked run
+        self.svc.cancel_run(run_id)
+        self.assertEqual(storage.get_run(self.db, run_id).status, RunStatus.STOPPED.value)
+        self.assertIsNone(locks.active_lock_for_workspace(self.db, ws))  # lock released
 
 
 if __name__ == "__main__":

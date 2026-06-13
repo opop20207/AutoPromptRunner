@@ -206,6 +206,24 @@ class RunApiTests(unittest.TestCase):
     def test_cancel_missing_job_returns_404(self):
         self.assertEqual(self.client.post("/queue/9999/cancel").status_code, 404)
 
+    def test_cancel_run_endpoint(self):
+        run_id = self.client.post("/runs", json={"prompt": "p", "max_loops": 1, "queued": True}).json()["id"]
+        resp = self.client.post(f"/runs/{run_id}/cancel", json={"reason": "stop from API"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["cancelled"])
+        self.assertEqual(body["run_status"], "STOPPED")
+        detail = self.client.get(f"/runs/{run_id}").json()
+        self.assertEqual(detail["status"], "STOPPED")
+        self.assertEqual(detail["cancellation_status"], "COMPLETED")
+
+    def test_cancel_missing_run_returns_404(self):
+        self.assertEqual(self.client.post("/runs/9999/cancel", json={"reason": "x"}).status_code, 404)
+
+    def test_cancel_terminal_run_returns_409(self):
+        run_id = self._run(max_loops=1).json()["id"]  # _run uses queued=False -> executes synchronously to DONE
+        self.assertEqual(self.client.post(f"/runs/{run_id}/cancel", json={}).status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

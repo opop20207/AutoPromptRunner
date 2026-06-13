@@ -399,6 +399,49 @@ yet).
 3. start the worker: `python -m autoprompt_runner.cli worker run`
 4. create a **queued** run from the web UI and watch the worker execute it.
 
+## Cancelling and stopping runs
+
+A queued, running, or waiting run can be cancelled. Cancellation moves the run to
+`STOPPED`, releases its workspace lock, and records a `cancellation` artifact (and a
+`run_cancellations` row of status `REQUESTED` -> `COMPLETED` / `FAILED`). What happens
+depends on the run's state:
+
+- **Queued** -> the queue job is cancelled so a worker never starts it.
+- **Waiting for approval** -> the pending approval is rejected.
+- **Running** -> a **best-effort** termination of the agent subprocess: the worker that
+  launched it registers the process in a small in-memory registry and can stop it
+  gracefully (terminate, then kill after a short grace period). That registry is **local
+  to the worker process** and does not survive a restart, so a cancel issued from a
+  different process (the API server or a separate CLI) cannot reach the worker's
+  subprocess -- the run is still marked stopped and its lock released, but the external
+  process may run to completion. A terminal run (`DONE` / `FAILED` / `STOPPED`) is a clean
+  error.
+
+CLI:
+
+```
+python -m autoprompt_runner.cli run cancel --run-id 12 --reason "User stopped from CLI"
+python -m autoprompt_runner.cli queue cancel --run-id 12   # also uses the cancellation service
+python -m autoprompt_runner.cli show-run --id 12           # shows the cancellation status/artifact
+```
+
+`run cancel` exits non-zero if the run is missing or already terminal.
+
+API:
+
+```
+curl -X POST http://127.0.0.1:8000/runs/12/cancel \
+  -H "Content-Type: application/json" -d '{"reason":"User stopped from web UI"}'
+```
+
+`POST /runs/{run_id}/cancel` returns the cancellation result, `404` if the run is missing,
+and `409` if it is already terminal. `GET /runs/{run_id}` includes `cancellation_status`.
+
+In the **web UI**, the run detail has a *Cancel* panel (optional reason, with a
+confirmation, and the current cancellation status); the run list and the queue panel have
+per-row *Cancel* buttons for cancellable runs. The UI notes that cancelling a running job
+is best-effort.
+
 ## Git artifact capture
 
 When a run's workspace is a Git repository, each step records read-only Git artifacts:
