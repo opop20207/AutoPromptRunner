@@ -4,6 +4,7 @@ CLI-first entry point (see PROJECT.md). Commands:
 
 * ``version``      -- print the package version.
 * ``init-db``      -- create the local SQLite database.
+* ``project``      -- manage project profiles (add / list / show / set-default / delete).
 * ``run``          -- start a run; execute the first step, generate the next prompt,
   and pause at a pending approval (default) or auto-run up to ``--max-loops``.
 * ``approve-next`` -- approve a run's pending next prompt and execute it.
@@ -11,8 +12,12 @@ CLI-first entry point (see PROJECT.md). Commands:
 * ``list-runs``    -- list recent runs.
 * ``show-run``     -- show one run, its steps, and any pending approval.
 
-Providers: ``mock`` (offline, default) and ``claude-code`` (the Claude Code CLI, run
-in a required ``--workspace``). The Codex runner and a web UI are not implemented yet.
+A project profile stores reusable run settings (repo path, provider, limits) so they
+need not be passed on every run. ``run`` resolves settings with precedence: explicit
+flags > selected ``--project`` > default project > built-in defaults.
+
+Providers: ``mock`` (offline, default) and ``claude-code`` (the Claude Code CLI). The
+Codex runner and a web UI are not implemented yet.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from typing import Optional, Sequence
 
 from . import __version__, storage
 from .models import StepExecutionReport
+from .projects import resolve_run_settings
 from .services.run_service import DEFAULT_PROVIDER_FACTORIES, RunService, RunServiceError
 from .state import RunStatus
 
@@ -59,16 +65,23 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init-db", help="Create the local SQLite database.")
     _add_db_path(init_parser)
 
+    _add_project_commands(subparsers)
+
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
     )
+    run_parser.add_argument(
+        "--project", default=None,
+        help="Use settings from this project profile (defaults to the default project).",
+    )
     run_parser.add_argument("--prompt", required=True, help="Prompt to send. Must not be empty.")
     run_parser.add_argument(
-        "--provider", default="mock",
-        help="Provider to use: mock (default) or claude-code.",
+        "--provider", default=None,
+        help="Provider: mock or claude-code. Overrides the project default.",
     )
     run_parser.add_argument(
-        "--max-loops", dest="max_loops", type=int, default=1, help="Max agent invocations. Must be >= 1."
+        "--max-loops", dest="max_loops", type=int, default=None,
+        help="Max agent invocations (>= 1). Overrides the project default.",
     )
     run_parser.add_argument(
         "--no-approval", dest="no_approval", action="store_true",
@@ -76,11 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--workspace", default=None,
-        help="Workspace directory for the provider. Required for claude-code.",
+        help="Workspace directory. Required for claude-code; defaults to the project repo_path.",
     )
     run_parser.add_argument(
-        "--timeout-seconds", dest="timeout_seconds", type=int, default=1800,
-        help="Subprocess timeout in seconds (claude-code). Must be >= 1.",
+        "--timeout-seconds", dest="timeout_seconds", type=int, default=None,
+        help="Subprocess timeout in seconds (>= 1). Overrides the project default.",
     )
     _add_db_path(run_parser)
 
@@ -107,6 +120,45 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_project_commands(subparsers: argparse._SubParsersAction) -> None:
+    project_parser = subparsers.add_parser("project", help="Manage project profiles.")
+    project_sub = project_parser.add_subparsers(dest="project_command", metavar="subcommand")
+
+    add_parser = project_sub.add_parser("add", help="Add a project profile.")
+    add_parser.add_argument("--name", required=True, help="Unique project name.")
+    add_parser.add_argument("--repo-path", dest="repo_path", required=True, help="Project directory (must exist).")
+    add_parser.add_argument("--provider", default="mock", help="Default provider: mock or claude-code.")
+    add_parser.add_argument("--max-loops", dest="max_loops", type=int, default=1, help="Default max loops (>= 1).")
+    add_parser.add_argument(
+        "--timeout-seconds", dest="timeout_seconds", type=int, default=1800, help="Default timeout seconds (>= 1)."
+    )
+    add_parser.add_argument(
+        "--no-approval", dest="no_approval", action="store_true",
+        help="Store require_approval = false for this project.",
+    )
+    _add_db_path(add_parser)
+
+    list_parser = project_sub.add_parser("list", help="List project profiles.")
+    _add_db_path(list_parser)
+
+    show_parser = project_sub.add_parser("show", help="Show a project profile.")
+    show_parser.add_argument("--name", required=True, help="Project name.")
+    _add_db_path(show_parser)
+
+    setdef_parser = project_sub.add_parser("set-default", help="Set the default project.")
+    setdef_parser.add_argument("--name", required=True, help="Project name.")
+    _add_db_path(setdef_parser)
+
+    delete_parser = project_sub.add_parser(
+        "delete", help="Delete a project profile (files on disk are not touched)."
+    )
+    delete_parser.add_argument("--name", required=True, help="Project name.")
+    _add_db_path(delete_parser)
+
+
+# -- simple commands ---------------------------------------------------------
+
+
 def cmd_version() -> int:
     print(__version__)
     return EXIT_OK
@@ -118,38 +170,174 @@ def cmd_init_db(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# -- project commands --------------------------------------------------------
+
+
+def cmd_project_add(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    name = (args.name or "").strip()
+    if not name:
+        print("error: --name must not be empty", file=sys.stderr)
+        return EXIT_USAGE
+    if args.provider not in DEFAULT_PROVIDER_FACTORIES:
+        print(
+            f"error: unsupported provider '{args.provider}'. Supported: {', '.join(SUPPORTED_PROVIDERS)}",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if args.max_loops < 1:
+        print("error: --max-loops must be >= 1", file=sys.stderr)
+        return EXIT_USAGE
+    if args.timeout_seconds < 1:
+        print("error: --timeout-seconds must be >= 1", file=sys.stderr)
+        return EXIT_USAGE
+    if not os.path.isdir(args.repo_path):
+        print(f"error: --repo-path does not exist or is not a directory: {args.repo_path}", file=sys.stderr)
+        return EXIT_USAGE
+    if storage.get_project_by_name(db_path, name) is not None:
+        print(f"error: project '{name}' already exists", file=sys.stderr)
+        return EXIT_USAGE
+
+    project_id = storage.create_project(
+        db_path,
+        name=name,
+        repo_path=args.repo_path,
+        default_provider=args.provider,
+        default_max_loops=args.max_loops,
+        require_approval=not args.no_approval,
+        timeout_seconds=args.timeout_seconds,
+    )
+    print(f"Added project '{name}' (id {project_id}).")
+    return EXIT_OK
+
+
+def cmd_project_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    projects = storage.list_projects(db_path)
+    if not projects:
+        print("No projects.")
+        return EXIT_OK
+    default = storage.get_default_project(db_path)
+    default_id = default.id if default is not None else None
+    print(f"  {'NAME':<20}  {'PROVIDER':<12}  {'LOOPS':>5}  {'APPROVAL':<8}  {'TIMEOUT':>7}  REPO_PATH")
+    for project in projects:
+        marker = "*" if project.id == default_id else " "
+        approval = "yes" if project.require_approval else "no"
+        print(
+            f"{marker} {project.name:<20}  {(project.default_provider or ''):<12}  "
+            f"{str(project.default_max_loops):>5}  {approval:<8}  {str(project.timeout_seconds):>7}  "
+            f"{project.repo_path}"
+        )
+    print("(* = default project)")
+    return EXIT_OK
+
+
+def cmd_project_show(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    project = storage.get_project_by_name(db_path, args.name)
+    if project is None:
+        print(f"error: project '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    default = storage.get_default_project(db_path)
+    is_default = default is not None and default.id == project.id
+    detail = [
+        f"Project '{project.name}' (id {project.id})",
+        f"  repo_path        : {project.repo_path}",
+        f"  default_provider : {project.default_provider}",
+        f"  default_max_loops: {project.default_max_loops}",
+        f"  require_approval : {project.require_approval}",
+        f"  timeout_seconds  : {project.timeout_seconds}",
+        f"  is_default       : {is_default}",
+        f"  created_at       : {project.created_at}",
+        f"  updated_at       : {project.updated_at}",
+    ]
+    print("\n".join(detail))
+    return EXIT_OK
+
+
+def cmd_project_set_default(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    project = storage.get_project_by_name(db_path, args.name)
+    if project is None:
+        print(f"error: project '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    storage.set_default_project(db_path, project.id)
+    print(f"Default project set to '{project.name}'.")
+    return EXIT_OK
+
+
+def cmd_project_delete(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    project = storage.get_project_by_name(db_path, args.name)
+    if project is None:
+        print(f"error: project '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    storage.delete_project(db_path, project.id)
+    print(f"Deleted project '{project.name}'. Files on disk were not modified.")
+    return EXIT_OK
+
+
+# -- run + run history -------------------------------------------------------
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     prompt = (args.prompt or "").strip()
     if not prompt:
         print("error: --prompt must not be empty", file=sys.stderr)
         return EXIT_USAGE
-    if args.max_loops < 1:
+
+    db_path = storage.init_db(args.db_path)
+
+    if args.project:
+        project = storage.get_project_by_name(db_path, args.project)
+        if project is None:
+            print(f"error: project '{args.project}' not found", file=sys.stderr)
+            return EXIT_NOT_FOUND
+    else:
+        project = storage.get_default_project(db_path)
+
+    settings = resolve_run_settings(
+        project,
+        provider=args.provider,
+        max_loops=args.max_loops,
+        timeout_seconds=args.timeout_seconds,
+        workspace=args.workspace,
+        no_approval=args.no_approval,
+    )
+
+    if settings.provider not in DEFAULT_PROVIDER_FACTORIES:
+        print(
+            f"error: unsupported provider '{settings.provider}'. Supported: {', '.join(SUPPORTED_PROVIDERS)}",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    if settings.max_loops < 1:
         print("error: --max-loops must be >= 1", file=sys.stderr)
         return EXIT_USAGE
-    if args.provider not in DEFAULT_PROVIDER_FACTORIES:
-        supported = ", ".join(SUPPORTED_PROVIDERS)
-        print(f"error: unsupported provider '{args.provider}'. Supported: {supported}", file=sys.stderr)
-        return EXIT_USAGE
-    if args.timeout_seconds < 1:
+    if settings.timeout_seconds < 1:
         print("error: --timeout-seconds must be >= 1", file=sys.stderr)
         return EXIT_USAGE
-    if args.provider == "claude-code":
-        if not args.workspace:
-            print("error: --workspace is required for the claude-code provider", file=sys.stderr)
+    if settings.provider == "claude-code":
+        if not settings.workspace:
+            print(
+                "error: --workspace is required for the claude-code provider "
+                "(pass --workspace or use a project repo_path)",
+                file=sys.stderr,
+            )
             return EXIT_USAGE
-        if not os.path.isdir(args.workspace):
-            print(f"error: workspace does not exist or is not a directory: {args.workspace}", file=sys.stderr)
+        if not os.path.isdir(settings.workspace):
+            print(f"error: workspace does not exist or is not a directory: {settings.workspace}", file=sys.stderr)
             return EXIT_USAGE
 
-    service = RunService(args.db_path)
+    service = RunService(db_path)
     try:
         report = service.start(
             prompt=prompt,
-            provider=args.provider,
-            max_loops=args.max_loops,
-            require_approval=not args.no_approval,
-            workspace=args.workspace,
-            timeout_seconds=args.timeout_seconds,
+            provider=settings.provider,
+            max_loops=settings.max_loops,
+            require_approval=settings.require_approval,
+            workspace=settings.workspace,
+            timeout_seconds=settings.timeout_seconds,
         )
     except (RunServiceError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -245,6 +433,9 @@ def cmd_show_run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# -- helpers -----------------------------------------------------------------
+
+
 def _exit_code_for(report: StepExecutionReport) -> int:
     return EXIT_RUN_FAILED if report.run_status == RunStatus.FAILED.value else EXIT_OK
 
@@ -275,6 +466,24 @@ def _print_step_report(report: StepExecutionReport) -> None:
     print("\n".join(lines))
 
 
+def _dispatch_project(args: argparse.Namespace) -> int:
+    handlers = {
+        "add": cmd_project_add,
+        "list": cmd_project_list,
+        "show": cmd_project_show,
+        "set-default": cmd_project_set_default,
+        "delete": cmd_project_delete,
+    }
+    handler = handlers.get(getattr(args, "project_command", None))
+    if handler is None:
+        print(
+            "error: project requires a subcommand: add, list, show, set-default, delete",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return handler(args)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Parse ``argv`` (defaults to ``sys.argv``) and dispatch to a command handler."""
     parser = build_parser()
@@ -284,6 +493,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_version()
     if args.command == "init-db":
         return cmd_init_db(args)
+    if args.command == "project":
+        return _dispatch_project(args)
     if args.command == "run":
         return cmd_run(args)
     if args.command == "approve-next":

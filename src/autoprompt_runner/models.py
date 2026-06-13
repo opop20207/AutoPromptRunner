@@ -54,6 +54,26 @@ class RunReport:
 
 
 @dataclass
+class Project:
+    """A reusable project profile of run settings, persisted in ``projects``.
+
+    ``require_approval`` is stored as an integer (0/1) in SQLite but exposed here as a
+    ``bool``. A project lets the user avoid passing workspace/provider/limits on every
+    run (see the ``--project`` flag and the default project).
+    """
+
+    id: int
+    name: str
+    repo_path: str
+    default_provider: str
+    default_max_loops: int
+    require_approval: bool
+    timeout_seconds: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

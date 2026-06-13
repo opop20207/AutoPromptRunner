@@ -1,9 +1,9 @@
 """SQLite persistence for AutoPromptRunner.
 
 A thin data-access layer over the Python standard-library ``sqlite3`` module. It
-stores projects, runs, steps, and approvals so run history survives across CLI
-invocations. All state stays on the local machine (see AGENTS.md, "Logging Rules").
-No third-party packages are used.
+stores project profiles, runs, steps, approvals, and a small settings table (for the
+default project) so state survives across CLI invocations. All state stays on the
+local machine (see AGENTS.md, "Logging Rules"). No third-party packages are used.
 """
 
 from __future__ import annotations
@@ -14,18 +14,33 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from .approvals import ApprovalStatus
-from .models import Approval, StoredRun, StoredStep
+from .models import Approval, Project, StoredRun, StoredStep
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
 # Default database location, relative to the current working directory.
 DEFAULT_DB_PATH = os.path.join(".autoprompt", "autoprompt.db")
+
+# Settings key that stores the default project's id.
+DEFAULT_PROJECT_KEY = "default_project_id"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     repo_path TEXT,
-    created_at TEXT NOT NULL
+    default_provider TEXT,
+    default_max_loops INTEGER,
+    require_approval INTEGER,
+    timeout_seconds INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects (name);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -77,6 +92,13 @@ _RUNS_MIGRATIONS = (
     ("workspace", "ALTER TABLE runs ADD COLUMN workspace TEXT"),
     ("timeout_seconds", "ALTER TABLE runs ADD COLUMN timeout_seconds INTEGER"),
 )
+_PROJECTS_MIGRATIONS = (
+    ("default_provider", "ALTER TABLE projects ADD COLUMN default_provider TEXT"),
+    ("default_max_loops", "ALTER TABLE projects ADD COLUMN default_max_loops INTEGER"),
+    ("require_approval", "ALTER TABLE projects ADD COLUMN require_approval INTEGER"),
+    ("timeout_seconds", "ALTER TABLE projects ADD COLUMN timeout_seconds INTEGER"),
+    ("updated_at", "ALTER TABLE projects ADD COLUMN updated_at TEXT"),
+)
 
 
 def _utcnow_iso() -> str:
@@ -95,9 +117,9 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def _migrate_runs(conn: sqlite3.Connection) -> None:
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
-    for column, statement in _RUNS_MIGRATIONS:
+def _migrate_table(conn: sqlite3.Connection, table: str, migrations) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for column, statement in migrations:
         if column not in existing:
             conn.execute(statement)
 
@@ -119,11 +141,198 @@ def init_db(db_path: Optional[str] = None) -> str:
     conn = _connect(path)
     try:
         conn.executescript(SCHEMA)
-        _migrate_runs(conn)
+        _migrate_table(conn, "runs", _RUNS_MIGRATIONS)
+        _migrate_table(conn, "projects", _PROJECTS_MIGRATIONS)
         conn.commit()
     finally:
         conn.close()
     return path
+
+
+# -- project profiles --------------------------------------------------------
+
+
+def create_project(
+    db_path: str,
+    name: str,
+    repo_path: str,
+    default_provider: str,
+    default_max_loops: int,
+    require_approval: bool,
+    timeout_seconds: int,
+) -> int:
+    """Insert a project profile and return its id. Raises on a duplicate name."""
+    path = _resolve_db_path(db_path)
+    now = _utcnow_iso()
+    conn = _connect(path)
+    try:
+        cur = conn.execute(
+            "INSERT INTO projects "
+            "(name, repo_path, default_provider, default_max_loops, require_approval, "
+            "timeout_seconds, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                name,
+                repo_path,
+                default_provider,
+                int(default_max_loops),
+                1 if require_approval else 0,
+                int(timeout_seconds),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_projects(db_path: str) -> List[Project]:
+    """Return all project profiles ordered by name."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute("SELECT * FROM projects ORDER BY name ASC").fetchall()
+        return [_row_to_project(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_project_by_id(db_path: str, project_id: int) -> Optional[Project]:
+    """Return the project with ``project_id`` or ``None``."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        return _row_to_project(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_project_by_name(db_path: str, name: str) -> Optional[Project]:
+    """Return the project named ``name`` or ``None``."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT * FROM projects WHERE name = ?", (name,)).fetchone()
+        return _row_to_project(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def update_project(
+    db_path: str,
+    project_id: int,
+    repo_path: Optional[str] = None,
+    default_provider: Optional[str] = None,
+    default_max_loops: Optional[int] = None,
+    require_approval: Optional[bool] = None,
+    timeout_seconds: Optional[int] = None,
+) -> None:
+    """Update the provided (non-``None``) fields of a project and bump ``updated_at``."""
+    assignments: List[str] = []
+    values: List[object] = []
+    if repo_path is not None:
+        assignments.append("repo_path = ?")
+        values.append(repo_path)
+    if default_provider is not None:
+        assignments.append("default_provider = ?")
+        values.append(default_provider)
+    if default_max_loops is not None:
+        assignments.append("default_max_loops = ?")
+        values.append(int(default_max_loops))
+    if require_approval is not None:
+        assignments.append("require_approval = ?")
+        values.append(1 if require_approval else 0)
+    if timeout_seconds is not None:
+        assignments.append("timeout_seconds = ?")
+        values.append(int(timeout_seconds))
+    assignments.append("updated_at = ?")
+    values.append(_utcnow_iso())
+    values.append(project_id)
+
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        conn.execute(f"UPDATE projects SET {', '.join(assignments)} WHERE id = ?", values)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_project(db_path: str, project_id: int) -> None:
+    """Delete a project profile. If it was the default, clear the default.
+
+    Only the profile row is removed; no files on disk are touched.
+    """
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    if _get_setting(db_path, DEFAULT_PROJECT_KEY) == str(project_id):
+        clear_default_project(db_path)
+
+
+# -- default project (settings) ---------------------------------------------
+
+
+def set_default_project(db_path: str, project_id: int) -> None:
+    """Record ``project_id`` as the default project."""
+    _set_setting(db_path, DEFAULT_PROJECT_KEY, str(int(project_id)))
+
+
+def clear_default_project(db_path: str) -> None:
+    """Clear the default project, if any."""
+    _delete_setting(db_path, DEFAULT_PROJECT_KEY)
+
+
+def get_default_project(db_path: str) -> Optional[Project]:
+    """Return the default project, or ``None`` if unset or missing."""
+    raw = _get_setting(db_path, DEFAULT_PROJECT_KEY)
+    if raw is None:
+        return None
+    try:
+        project_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return get_project_by_id(db_path, project_id)
+
+
+def _get_setting(db_path: str, key: str) -> Optional[str]:
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row is not None else None
+    finally:
+        conn.close()
+
+
+def _set_setting(db_path: str, key: str, value: str) -> None:
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _delete_setting(db_path: str, key: str) -> None:
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# -- runs --------------------------------------------------------------------
 
 
 def create_run(
@@ -267,6 +476,9 @@ def get_steps_for_run(db_path: str, run_id: int) -> List[StoredStep]:
         conn.close()
 
 
+# -- approvals ---------------------------------------------------------------
+
+
 def create_approval(
     db_path: str,
     run_id: int,
@@ -348,6 +560,23 @@ def list_approvals_for_run(db_path: str, run_id: int) -> List[Approval]:
         return [_row_to_approval(row) for row in rows]
     finally:
         conn.close()
+
+
+# -- row mappers -------------------------------------------------------------
+
+
+def _row_to_project(row: sqlite3.Row) -> Project:
+    return Project(
+        id=row["id"],
+        name=row["name"],
+        repo_path=row["repo_path"],
+        default_provider=_opt(row, "default_provider"),
+        default_max_loops=_opt(row, "default_max_loops"),
+        require_approval=bool(_opt(row, "require_approval")),
+        timeout_seconds=_opt(row, "timeout_seconds"),
+        created_at=row["created_at"],
+        updated_at=_opt(row, "updated_at"),
+    )
 
 
 def _row_to_run(row: sqlite3.Row) -> StoredRun:
