@@ -30,15 +30,17 @@ from typing import Optional, Sequence
 from . import __version__, storage
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
-from .projects import resolve_run_settings
-from .services.run_service import DEFAULT_PROVIDER_FACTORIES, RunService, RunServiceError
+from .services.run_service import (
+    DEFAULT_PROVIDER_FACTORIES,
+    RunInputError,
+    RunService,
+    RunServiceError,
+    resolve_run_inputs,
+)
 from .state import RunStatus
 
 # Provider names the CLI accepts (resolution/construction lives in RunService).
 SUPPORTED_PROVIDERS = tuple(sorted(DEFAULT_PROVIDER_FACTORIES))
-
-# Providers that require a workspace directory to run.
-WORKSPACE_REQUIRED_PROVIDERS = ("claude-code", "codex")
 
 # Exit codes.
 EXIT_OK = 0
@@ -302,55 +304,22 @@ def cmd_project_delete(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    prompt = (args.prompt or "").strip()
-    if not prompt:
-        print("error: --prompt must not be empty", file=sys.stderr)
-        return EXIT_USAGE
-
-    db_path = storage.init_db(args.db_path)
-
-    if args.project:
-        project = storage.get_project_by_name(db_path, args.project)
-        if project is None:
-            print(f"error: project '{args.project}' not found", file=sys.stderr)
-            return EXIT_NOT_FOUND
-    else:
-        project = storage.get_default_project(db_path)
-
-    settings = resolve_run_settings(
-        project,
-        provider=args.provider,
-        max_loops=args.max_loops,
-        timeout_seconds=args.timeout_seconds,
-        workspace=args.workspace,
-        no_approval=args.no_approval,
-    )
-
-    if settings.provider not in DEFAULT_PROVIDER_FACTORIES:
-        print(
-            f"error: unsupported provider '{settings.provider}'. Supported: {', '.join(SUPPORTED_PROVIDERS)}",
-            file=sys.stderr,
+    try:
+        prompt, settings = resolve_run_inputs(
+            args.db_path,
+            prompt=args.prompt,
+            project=args.project,
+            provider=args.provider,
+            workspace=args.workspace,
+            max_loops=args.max_loops,
+            timeout_seconds=args.timeout_seconds,
+            no_approval=args.no_approval,
         )
-        return EXIT_USAGE
-    if settings.max_loops < 1:
-        print("error: --max-loops must be >= 1", file=sys.stderr)
-        return EXIT_USAGE
-    if settings.timeout_seconds < 1:
-        print("error: --timeout-seconds must be >= 1", file=sys.stderr)
-        return EXIT_USAGE
-    if settings.provider in WORKSPACE_REQUIRED_PROVIDERS:
-        if not settings.workspace:
-            print(
-                f"error: --workspace is required for the {settings.provider} provider "
-                "(pass --workspace or use a project repo_path)",
-                file=sys.stderr,
-            )
-            return EXIT_USAGE
-        if not os.path.isdir(settings.workspace):
-            print(f"error: workspace does not exist or is not a directory: {settings.workspace}", file=sys.stderr)
-            return EXIT_USAGE
+    except RunInputError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND if exc.kind == "not_found" else EXIT_USAGE
 
-    service = RunService(db_path)
+    service = RunService(args.db_path)
     try:
         report = service.start(
             prompt=prompt,

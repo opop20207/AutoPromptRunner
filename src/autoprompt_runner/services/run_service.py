@@ -23,11 +23,13 @@ Loop policy:
 
 from __future__ import annotations
 
+import os
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .. import artifacts, storage
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
+from ..projects import ResolvedRunSettings, resolve_run_settings
 from ..runners import AgentRunner, ClaudeCodeRunner, CodexRunner, MockRunner
 from ..state import RunStatus
 from .prompt_generator import PromptGenerator
@@ -64,6 +66,76 @@ DEFAULT_PROVIDER_FACTORIES: Dict[str, ProviderFactory] = {
     "codex": _codex_factory,
 }
 
+# Providers that require a workspace directory to run.
+WORKSPACE_REQUIRED_PROVIDERS = ("claude-code", "codex")
+
+
+class RunInputError(Exception):
+    """Raised when run inputs are invalid or a named project is missing.
+
+    ``kind`` is ``"invalid"`` (bad input) or ``"not_found"`` (named project absent);
+    callers map it to a CLI exit code or an HTTP status. No database is created when the
+    prompt is empty.
+    """
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+def resolve_run_inputs(
+    db_path: Optional[str],
+    *,
+    prompt: str,
+    project: Optional[str] = None,
+    provider: Optional[str] = None,
+    workspace: Optional[str] = None,
+    max_loops: Optional[int] = None,
+    timeout_seconds: Optional[int] = None,
+    no_approval: bool = False,
+) -> Tuple[str, ResolvedRunSettings]:
+    """Resolve and validate run inputs, shared by the CLI and the HTTP API.
+
+    Applies project/default-project resolution (the same rules the CLI uses) and the
+    same validation, raising :class:`RunInputError` on a bad input or a missing named
+    project. Returns the cleaned prompt and the resolved settings.
+    """
+    text = (prompt or "").strip()
+    if not text:
+        raise RunInputError("invalid", "--prompt must not be empty")
+    db_path = storage.init_db(db_path)
+    if project:
+        selected = storage.get_project_by_name(db_path, project)
+        if selected is None:
+            raise RunInputError("not_found", f"project '{project}' not found")
+    else:
+        selected = storage.get_default_project(db_path)
+    settings = resolve_run_settings(
+        selected,
+        provider=provider,
+        max_loops=max_loops,
+        timeout_seconds=timeout_seconds,
+        workspace=workspace,
+        no_approval=no_approval,
+    )
+    if settings.provider not in DEFAULT_PROVIDER_FACTORIES:
+        supported = ", ".join(sorted(DEFAULT_PROVIDER_FACTORIES))
+        raise RunInputError("invalid", f"unsupported provider '{settings.provider}'. Supported: {supported}")
+    if settings.max_loops < 1:
+        raise RunInputError("invalid", "--max-loops must be >= 1")
+    if settings.timeout_seconds < 1:
+        raise RunInputError("invalid", "--timeout-seconds must be >= 1")
+    if settings.provider in WORKSPACE_REQUIRED_PROVIDERS:
+        if not settings.workspace:
+            raise RunInputError(
+                "invalid",
+                f"--workspace is required for the {settings.provider} provider "
+                "(pass --workspace or use a project repo_path)",
+            )
+        if not os.path.isdir(settings.workspace):
+            raise RunInputError("invalid", f"workspace does not exist or is not a directory: {settings.workspace}")
+    return text, settings
+
 
 def _extract_git_context(payloads: List[ArtifactPayload]) -> Tuple[List[str], str]:
     """Pull changed-files and diff-stat out of the captured Git artifact payloads."""
@@ -75,7 +147,15 @@ def _extract_git_context(payloads: List[ArtifactPayload]) -> Tuple[List[str], st
 
 
 class RunServiceError(Exception):
-    """Raised for run-control errors: missing run, no pending approval, terminal run."""
+    """Raised for run-control errors: missing run, no pending approval, terminal run.
+
+    ``kind`` (``not_found`` / ``terminal`` / ``no_pending`` / ``error``) lets HTTP
+    callers map to a precise status code; the CLI treats them uniformly.
+    """
+
+    def __init__(self, message: str, kind: str = "error") -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class RunService:
@@ -131,12 +211,12 @@ class RunService:
         """Approve the pending approval and execute the approved next prompt."""
         run = storage.get_run(self.db_path, run_id)
         if run is None:
-            raise RunServiceError(f"run {run_id} not found")
+            raise RunServiceError(f"run {run_id} not found", kind="not_found")
         if run.status in _TERMINAL_VALUES:
-            raise RunServiceError(f"run {run_id} is {run.status}; cannot approve")
+            raise RunServiceError(f"run {run_id} is {run.status}; cannot approve", kind="terminal")
         pending = storage.get_pending_approval(self.db_path, run_id)
         if pending is None:
-            raise RunServiceError(f"no pending approval for run {run_id}")
+            raise RunServiceError(f"no pending approval for run {run_id}", kind="no_pending")
 
         storage.approve_pending_approval(self.db_path, run_id)
         next_index = len(storage.get_steps_for_run(self.db_path, run_id))
@@ -157,10 +237,10 @@ class RunService:
         """Reject the pending approval and stop the run."""
         run = storage.get_run(self.db_path, run_id)
         if run is None:
-            raise RunServiceError(f"run {run_id} not found")
+            raise RunServiceError(f"run {run_id} not found", kind="not_found")
         pending = storage.get_pending_approval(self.db_path, run_id)
         if pending is None:
-            raise RunServiceError(f"no pending approval for run {run_id}")
+            raise RunServiceError(f"no pending approval for run {run_id}", kind="no_pending")
 
         storage.reject_pending_approval(self.db_path, run_id)
         storage.update_run_status(self.db_path, run_id, RunStatus.STOPPED.value)

@@ -19,12 +19,15 @@ classifiers = [
     "Intended Audience :: Developers",
 ]
 
-# No third-party runtime dependencies: standard library only.
+# The CLI core has no third-party runtime dependencies (standard library only). The
+# optional HTTP API requires the "api" extra.
 dependencies = []
 
-# pytest is declared as a development extra but is NOT installed by this step.
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+# HTTP API backend (FastAPI). Install with: pip install -e ".[api]"
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
+# Development / test extra (adds the API deps plus the test client and runner).
+dev = ["pytest>=7.0", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.29"]
 
 [project.scripts]
 autoprompt-runner = "autoprompt_runner.cli:main"

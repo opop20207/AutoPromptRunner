@@ -9,9 +9,9 @@ The CLI runs a bounded prompt loop, persists run history to a local SQLite datab
 gates each generated next prompt behind an approval by default, supports reusable
 project profiles, and captures the Git state around each step (read-only) so every run
 records what changed. Three providers are available: `mock` (offline, deterministic),
-`claude-code` (the real Claude Code CLI), and `codex` (the real Codex CLI). There are no
-third-party runtime dependencies
-(standard library only).
+`claude-code` (the real Claude Code CLI), and `codex` (the real Codex CLI). The CLI core
+has no third-party runtime dependencies (standard library only); an optional FastAPI
+HTTP backend is available via the `api` extra.
 
 ## MVP Workflow
 
@@ -183,6 +183,56 @@ model as `claude-code`. All Codex-specific CLI details are isolated inside `Code
 - **Safety warning:** Codex may create, modify, or delete files inside the workspace.
   Point `--workspace` only at a project you intend Codex to change, ideally one tracked
   in version control.
+
+## HTTP API (FastAPI)
+
+An optional FastAPI backend exposes the same run/project operations over HTTP, using
+the **same local SQLite database** as the CLI. There is no authentication, no
+websocket / live-log streaming, and **no frontend** yet.
+
+Install the API extra and start the server:
+
+```
+pip install -e ".[api]"
+python -m uvicorn autoprompt_runner.api.app:app --reload
+```
+
+Health check:
+
+```
+curl http://127.0.0.1:8000/health
+# {"status": "ok", "service": "AutoPromptRunner"}
+```
+
+Projects (profile only on delete -- files on disk are never deleted):
+
+```
+curl -X POST http://127.0.0.1:8000/projects \
+  -H "Content-Type: application/json" \
+  -d '{"name":"FactoryColony","repo_path":"/path/to/FactoryColony","default_provider":"claude-code","default_max_loops":5,"require_approval":true,"timeout_seconds":1800}'
+curl http://127.0.0.1:8000/projects
+curl http://127.0.0.1:8000/projects/FactoryColony
+curl -X POST http://127.0.0.1:8000/projects/FactoryColony/default
+curl -X DELETE http://127.0.0.1:8000/projects/FactoryColony
+```
+
+Runs and approvals (project/default resolution and validation match the CLI):
+
+```
+curl -X POST http://127.0.0.1:8000/runs \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Continue next task","project":"FactoryColony","max_loops":3}'
+curl http://127.0.0.1:8000/runs
+curl http://127.0.0.1:8000/runs/1                      # detail: steps, pending approval, artifacts
+curl -X POST http://127.0.0.1:8000/runs/1/approve-next  # execute the pending next step
+curl -X POST http://127.0.0.1:8000/runs/1/reject-next   # stop the run
+curl "http://127.0.0.1:8000/runs/1/artifacts?type=git_diff"
+curl http://127.0.0.1:8000/artifacts/1
+```
+
+Interactive docs are served at `/docs` (Swagger UI) and `/redoc`. Errors use standard
+HTTP status codes (400 invalid request, 404 missing project/run/artifact, 409 invalid
+run state) and never leak stack traces or secrets. A frontend is not implemented yet.
 
 ## Runner Providers
 
