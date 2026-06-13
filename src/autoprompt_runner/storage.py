@@ -13,6 +13,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from . import settings as _settings
 from .approvals import ApprovalStatus
 from .models import (
     Approval,
@@ -28,7 +29,9 @@ from .models import (
 )
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
-# Default database location, relative to the current working directory.
+# Built-in default database location, relative to the current working directory. The
+# effective default comes from settings (config file + AUTOPROMPT_DB_PATH); this constant
+# is the fallback used when settings cannot be loaded.
 DEFAULT_DB_PATH = os.path.join(".autoprompt", "autoprompt.db")
 
 # Settings key that stores the default project's id.
@@ -227,8 +230,16 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _default_db_path() -> str:
+    """The configured default db path (settings), falling back to ``DEFAULT_DB_PATH``."""
+    try:
+        return _settings.load_settings().storage.db_path or DEFAULT_DB_PATH
+    except Exception:
+        return DEFAULT_DB_PATH
+
+
 def _resolve_db_path(db_path: Optional[str]) -> str:
-    return db_path or DEFAULT_DB_PATH
+    return db_path or _default_db_path()
 
 
 def _connect(db_path: str) -> sqlite3.Connection:

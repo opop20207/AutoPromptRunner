@@ -663,5 +663,52 @@ class QueueWorkerCliTests(unittest.TestCase):
         self.assertEqual(storage.get_run(self.db, run_id).status, "STOPPED")
 
 
+class ConfigCliTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._cwd = os.getcwd()
+        os.chdir(self._tmp.name)  # clean cwd: no autoprompt.toml is found here
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith("AUTOPROMPT_")}
+        self._env = mock.patch.dict(os.environ, clean_env, clear=True)
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        os.chdir(self._cwd)
+        self._tmp.cleanup()
+
+    def test_config_show(self):
+        code, out, err = run_cli(["config", "show"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("[defaults]", out)
+        self.assertIn("provider", out)
+        self.assertIn("[safety]", out)
+
+    def test_config_validate_ok(self):
+        code, out, err = run_cli(["config", "validate"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("valid", out.lower())
+
+    def test_config_validate_invalid_exits_nonzero(self):
+        cfg = os.path.join(self._tmp.name, "bad.toml")
+        with open(cfg, "w", encoding="utf-8") as handle:
+            handle.write("[defaults]\nmax_loops = 999\n\n[safety]\nmax_loops_hard_limit = 20\n")
+        code, out, err = run_cli(["--config", cfg, "config", "validate"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("invalid", err.lower())
+
+    def test_config_init_creates_and_refuses_overwrite(self):
+        code, out, err = run_cli(["config", "init"])
+        self.assertEqual(code, 0, err)
+        target = os.path.join(".autoprompt", "config.toml")
+        self.assertTrue(os.path.exists(target))
+        self.assertIn("Created", out)
+        code2, out2, err2 = run_cli(["config", "init"])  # without --force -> refuse
+        self.assertNotEqual(code2, 0)
+        self.assertIn("already exists", err2.lower())
+        code3, out3, err3 = run_cli(["config", "init", "--force"])  # --force -> overwrite
+        self.assertEqual(code3, 0, err3)
+
+
 if __name__ == "__main__":
     unittest.main()

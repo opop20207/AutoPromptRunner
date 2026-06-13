@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 from typing import Callable, Optional
 
-from . import queue, storage
+from . import queue, settings, storage
 from .services.run_service import RunService
 from .state import RunStatus
 
@@ -27,11 +27,15 @@ class LocalWorker:
     def __init__(
         self,
         db_path: Optional[str] = None,
-        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        poll_interval_seconds: Optional[float] = None,
         service: Optional[RunService] = None,
         log: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.db_path = storage.init_db(db_path)
+        # Default the poll interval from settings (config file + env); the CLI passes an
+        # explicit value only when --poll-interval-seconds was given.
+        if poll_interval_seconds is None:
+            poll_interval_seconds = settings.load_settings().queue.poll_interval_seconds
         self.poll_interval_seconds = float(poll_interval_seconds)
         self.service = service or RunService(self.db_path)
         self.log = log or (lambda msg: print(msg))

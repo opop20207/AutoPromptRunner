@@ -1,0 +1,41 @@
+# Example AutoPromptRunner configuration.
+#
+# Copy this to `autoprompt.toml` (or `.autoprompt/config.toml`) and edit, or run
+# `python -m autoprompt_runner.cli config init` to generate `.autoprompt/config.toml`.
+# Every value here is also the built-in default, so a config file is optional.
+#
+# Do NOT store secrets in this file. AutoPromptRunner reads no credentials from config;
+# these are non-secret operational settings only. Environment variables (AUTOPROMPT_*)
+# override these values; see .env.example.
+
+[storage]
+# SQLite database path (relative to the working directory or absolute).
+db_path = ".autoprompt/autoprompt.db"
+
+[defaults]
+# Defaults used for a run when no CLI flag or project profile supplies the value.
+provider = "mock"
+workspace = ""
+max_loops = 5
+require_approval = true
+timeout_seconds = 1800
+
+[safety]
+# Hard limits that a run can never exceed, plus large-change warning thresholds.
+max_loops_hard_limit = 20
+timeout_seconds_hard_limit = 7200
+large_changed_files_threshold = 20
+large_diff_lines_threshold = 1000
+
+[queue]
+# How often the background worker polls the queue when it is empty (seconds).
+poll_interval_seconds = 2
+
+[api]
+# Host/port hints for the local HTTP API (uvicorn is started separately).
+host = "127.0.0.1"
+port = 8000
+
+[worktrees]
+# Base directory under which isolated Git worktrees are created.
+base_dir = ".autoprompt/worktrees"

@@ -1,22 +1,37 @@
-"""Default safety settings, limits, and denylists for AutoPromptRunner.
+"""Safety denylists plus the numeric limits derived from :mod:`autoprompt_runner.settings`.
 
-Plain data only (no behavior, no I/O). These values drive the checks in
-:mod:`autoprompt_runner.safety`. ``MAX_LOOPS_DEFAULT`` is the recommended default; the
-resolution default stays 1 for backward compatibility (see ``projects.py``). The
-``*_HARD_LIMIT`` values are enforced and cannot be exceeded.
+The numeric limits (loop / timeout bounds and large-change thresholds) are the effective
+settings -- built-in defaults overlaid with a config file and ``AUTOPROMPT_*`` environment
+variables -- so this module stays a single, backward-compatible import surface for the
+constants the safety checks and runners already use (``config.MAX_LOOPS_HARD_LIMIT`` etc.).
+The denylists (secret-file patterns, blocked commands, the workspace-allowlist env var
+name) are static policy and live here. Plain data only: no behavior beyond reading
+settings once at import, and a safe fallback to built-in defaults if settings fail to load.
 """
 
 from __future__ import annotations
 
-# Loop / runtime limits.
-MAX_LOOPS_DEFAULT = 5
-MAX_LOOPS_HARD_LIMIT = 20
-TIMEOUT_SECONDS_DEFAULT = 1800
-TIMEOUT_SECONDS_HARD_LIMIT = 7200
+from . import settings as _settings
+
+
+def _effective() -> "_settings.AppSettings":
+    try:
+        return _settings.load_settings()
+    except Exception:  # never let a bad config file / env break importing the package
+        return _settings.build_default_settings()
+
+
+_APP = _effective()
+
+# Loop / runtime limits (effective settings; mirror autoprompt_runner.settings).
+MAX_LOOPS_DEFAULT = _APP.defaults.max_loops
+MAX_LOOPS_HARD_LIMIT = _APP.safety.max_loops_hard_limit
+TIMEOUT_SECONDS_DEFAULT = _APP.defaults.timeout_seconds
+TIMEOUT_SECONDS_HARD_LIMIT = _APP.safety.timeout_seconds_hard_limit
 
 # Large-change thresholds (used for warnings, not blockers).
-LARGE_CHANGED_FILES_THRESHOLD = 20
-LARGE_DIFF_LINES_THRESHOLD = 1000
+LARGE_CHANGED_FILES_THRESHOLD = _APP.safety.large_changed_files_threshold
+LARGE_DIFF_LINES_THRESHOLD = _APP.safety.large_diff_lines_threshold
 
 # Optional workspace allowlist: a path-separator-joined list of allowed root
 # directories. When set, runs may only use workspaces inside one of these roots.

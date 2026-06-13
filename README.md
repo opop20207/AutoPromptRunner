@@ -28,10 +28,84 @@ User command
 
 ## Requirements
 
-- Python >= 3.11
+- Python >= 3.11 (uses the standard-library `tomllib` for config files)
 - No third-party runtime dependencies (standard library only)
 - For the `claude-code` provider: the Claude Code CLI installed and authenticated
 - For Git artifact capture: the `git` CLI (optional; skipped when absent or non-repo)
+
+## Configuration
+
+CLI, API, and worker share one settings loader so they behave consistently. Settings come
+from a local **TOML config file** plus **`AUTOPROMPT_*` environment variables**, layered
+over built-in defaults -- **no config file is required**.
+
+**Search order** (first match wins): explicit `--config <path>` → `AUTOPROMPT_CONFIG` env
+→ `./autoprompt.toml` → `./.autoprompt/config.toml` → built-in defaults.
+
+**Override precedence**, lowest to highest: built-in defaults → config file → environment
+variables → (for a run) project profile → explicit CLI flags. In other words, a CLI flag
+or project profile always wins at execution time; config/env set the defaults beneath them.
+
+A complete example is in [`autoprompt.example.toml`](autoprompt.example.toml); the sections
+and built-in defaults are:
+
+```toml
+[storage]
+db_path = ".autoprompt/autoprompt.db"
+
+[defaults]
+provider = "mock"
+workspace = ""
+max_loops = 5
+require_approval = true
+timeout_seconds = 1800
+
+[safety]
+max_loops_hard_limit = 20
+timeout_seconds_hard_limit = 7200
+large_changed_files_threshold = 20
+large_diff_lines_threshold = 1000
+
+[queue]
+poll_interval_seconds = 2
+
+[api]
+host = "127.0.0.1"
+port = 8000
+
+[worktrees]
+base_dir = ".autoprompt/worktrees"
+```
+
+**Environment overrides** (see [`.env.example`](.env.example)): `AUTOPROMPT_CONFIG`,
+`AUTOPROMPT_DB_PATH`, `AUTOPROMPT_DEFAULT_PROVIDER`, `AUTOPROMPT_DEFAULT_WORKSPACE`,
+`AUTOPROMPT_MAX_LOOPS_DEFAULT`, `AUTOPROMPT_MAX_LOOPS_HARD_LIMIT`,
+`AUTOPROMPT_TIMEOUT_SECONDS_DEFAULT`, `AUTOPROMPT_TIMEOUT_SECONDS_HARD_LIMIT`,
+`AUTOPROMPT_QUEUE_POLL_INTERVAL_SECONDS`, `AUTOPROMPT_API_HOST`, `AUTOPROMPT_API_PORT`,
+`AUTOPROMPT_WORKTREE_BASE_DIR`.
+
+CLI:
+
+```
+python -m autoprompt_runner.cli config init                 # write .autoprompt/config.toml (use --force to overwrite)
+python -m autoprompt_runner.cli --config autoprompt.toml config show       # print the effective config
+python -m autoprompt_runner.cli config validate             # exit non-zero if the effective config is invalid
+```
+
+Pass the global `--config <path>` **before** the command (e.g. `--config x.toml run ...`).
+Validation rejects an empty `db_path`, non-positive limits, `max_loops` above the hard
+limit, and `timeout_seconds` above its hard limit.
+
+- **Storage** uses `storage.db_path` by default (the built-in `.autoprompt/autoprompt.db`
+  still applies when nothing is configured).
+- **Worker** uses `queue.poll_interval_seconds` by default; `--poll-interval-seconds`
+  overrides it.
+- **API** uses the same loader, and `GET /health` returns compact, non-secret config
+  metadata (`db_path`, `default_provider`, `queue_poll_interval_seconds`, and the safety
+  hard limits) -- never environment dumps or secrets.
+
+> **Never store secrets in the config file or `AUTOPROMPT_*` variables.** These are
+> non-secret operational settings only; AutoPromptRunner reads no credentials from them.
 
 ## Prompt Loop and Approval Gate
 

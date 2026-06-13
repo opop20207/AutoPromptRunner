@@ -26,7 +26,25 @@ class HealthApiTests(unittest.TestCase):
         client = TestClient(app)
         resp = client.get("/health")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"status": "ok", "service": "AutoPromptRunner"})
+        body = resp.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["service"], "AutoPromptRunner")
+
+    def test_health_includes_safe_config_metadata(self):
+        from autoprompt_runner.api.app import app
+
+        config = TestClient(app).get("/health").json()["config"]
+        for key in (
+            "db_path",
+            "default_provider",
+            "queue_poll_interval_seconds",
+            "max_loops_hard_limit",
+            "timeout_seconds_hard_limit",
+        ):
+            self.assertIn(key, config)
+        # No environment dumps / secrets in the metadata.
+        self.assertNotIn("env", config)
+        self.assertFalse(any("secret" in str(k).lower() for k in config))
 
 
 if __name__ == "__main__":

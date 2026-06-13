@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, cancel, locks, queue, safety, storage, templates, worker, worktrees
+from . import __version__, cancel, locks, queue, safety, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -71,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="autoprompt-runner",
         description="Local-first prompt orchestration tool (CLI).",
     )
+    parser.add_argument(
+        "--config", default=None,
+        help="Path to a TOML config file (overrides the search order). Pass before the command.",
+    )
     subparsers = parser.add_subparsers(dest="command", metavar="command")
 
     subparsers.add_parser("version", help="Print the package version.")
@@ -90,6 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_locks_commands(subparsers)
     _add_queue_commands(subparsers)
     _add_worker_commands(subparsers)
+    _add_config_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -335,10 +340,19 @@ def _add_worker_commands(subparsers: argparse._SubParsersAction) -> None:
     run_parser = worker_sub.add_parser("run", help="Start the queue worker loop (Ctrl+C to stop).")
     run_parser.add_argument("--once", dest="once", action="store_true", help="Execute one job if available, then exit.")
     run_parser.add_argument(
-        "--poll-interval-seconds", dest="poll_interval_seconds", type=float, default=2.0,
-        help="Seconds to wait between polls when the queue is empty (default 2).",
+        "--poll-interval-seconds", dest="poll_interval_seconds", type=float, default=None,
+        help="Seconds between polls when the queue is empty (default: config queue.poll_interval_seconds).",
     )
     _add_db_path(run_parser)
+
+
+def _add_config_commands(subparsers: argparse._SubParsersAction) -> None:
+    config_parser = subparsers.add_parser("config", help="Inspect or initialize configuration.")
+    config_sub = config_parser.add_subparsers(dest="config_command", metavar="subcommand")
+    config_sub.add_parser("show", help="Print the effective config (file + env; no secrets).")
+    config_sub.add_parser("validate", help="Validate the effective config; exit non-zero if invalid.")
+    init_parser = config_sub.add_parser("init", help="Create .autoprompt/config.toml from the defaults.")
+    init_parser.add_argument("--force", dest="force", action="store_true", help="Overwrite an existing config file.")
 
 
 # -- simple commands ---------------------------------------------------------
@@ -350,7 +364,8 @@ def cmd_version() -> int:
 
 
 def cmd_init_db(args: argparse.Namespace) -> int:
-    path = storage.init_db(args.db_path)
+    db_path = args.db_path or settings.load_settings(args.config).storage.db_path
+    path = storage.init_db(db_path)
     print(f"Database initialized at: {path}")
     return EXIT_OK
 
@@ -826,13 +841,19 @@ def _dispatch_queue(args: argparse.Namespace) -> int:
 
 
 def cmd_worker_run(args: argparse.Namespace) -> int:
-    db_path = storage.init_db(args.db_path)
-    local_worker = worker.LocalWorker(db_path, poll_interval_seconds=args.poll_interval_seconds)
+    app_settings = settings.load_settings(args.config)
+    db_path = storage.init_db(args.db_path or app_settings.storage.db_path)
+    poll = (
+        args.poll_interval_seconds
+        if args.poll_interval_seconds is not None
+        else app_settings.queue.poll_interval_seconds
+    )
+    local_worker = worker.LocalWorker(db_path, poll_interval_seconds=poll)
     if args.once:
         executed = local_worker.run_once()
         print("worker: executed one job." if executed else "worker: no queued jobs.")
         return EXIT_OK
-    print(f"worker: polling every {args.poll_interval_seconds}s (Ctrl+C to stop)...")
+    print(f"worker: polling every {poll}s (Ctrl+C to stop)...")
     try:
         local_worker.run_forever()
     except KeyboardInterrupt:
@@ -848,13 +869,81 @@ def _dispatch_worker(args: argparse.Namespace) -> int:
     return EXIT_USAGE
 
 
+# -- config commands ---------------------------------------------------------
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _render_config_toml(app_settings) -> str:
+    """Render an AppSettings into a TOML document (built-in defaults for ``config init``)."""
+    lines = []
+    for section, values in settings.settings_to_dict(app_settings).items():
+        lines.append(f"[{section}]")
+        for key, value in values.items():
+            lines.append(f"{key} = {_toml_value(value)}")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def cmd_config_show(args: argparse.Namespace) -> int:
+    try:
+        app_settings = settings.load_settings(args.config)
+    except settings.SettingsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    for section, values in settings.settings_to_dict(app_settings).items():
+        print(f"[{section}]")
+        for key, value in values.items():
+            print(f"  {key} = {value}")
+    return EXIT_OK
+
+
+def cmd_config_validate(args: argparse.Namespace) -> int:
+    try:
+        settings.validate_settings(settings.load_settings(args.config))
+    except settings.SettingsError as exc:
+        print(f"error: invalid config: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    print("Config is valid.")
+    return EXIT_OK
+
+
+def cmd_config_init(args: argparse.Namespace) -> int:
+    target = os.path.join(".autoprompt", "config.toml")
+    if os.path.exists(target) and not args.force:
+        print(f"error: {target} already exists (use --force to overwrite)", file=sys.stderr)
+        return EXIT_USAGE
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.write(_render_config_toml(settings.build_default_settings()))
+    print(f"Created {target}")
+    return EXIT_OK
+
+
+def _dispatch_config(args: argparse.Namespace) -> int:
+    handlers = {"show": cmd_config_show, "validate": cmd_config_validate, "init": cmd_config_init}
+    handler = handlers.get(getattr(args, "config_command", None))
+    if handler is None:
+        print("error: config requires a subcommand: show, validate, init", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- run + run history -------------------------------------------------------
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     try:
-        prompt, settings = resolve_run_inputs(
-            args.db_path,
+        db_path = args.db_path or settings.load_settings(args.config).storage.db_path
+        prompt, run_settings = resolve_run_inputs(
+            db_path,
             prompt=args.prompt,
             project=args.project,
             provider=args.provider,
@@ -866,23 +955,27 @@ def cmd_run(args: argparse.Namespace) -> int:
             goal=args.goal,
             extra_context=args.extra_context,
             worktree=args.worktree,
+            config_path=args.config,
         )
+    except settings.SettingsError as exc:
+        print(f"error: invalid config: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     except RunInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_NOT_FOUND if exc.kind == "not_found" else EXIT_USAGE
 
-    service = RunService(args.db_path)
+    service = RunService(db_path)
     if args.queued:
         try:
             run_id = service.create_run_only(
                 prompt=prompt,
-                provider=settings.provider,
-                max_loops=settings.max_loops,
-                require_approval=settings.require_approval,
-                workspace=settings.workspace,
-                timeout_seconds=settings.timeout_seconds,
+                provider=run_settings.provider,
+                max_loops=run_settings.max_loops,
+                require_approval=run_settings.require_approval,
+                workspace=run_settings.workspace,
+                timeout_seconds=run_settings.timeout_seconds,
             )
-            job_id = queue.enqueue(args.db_path, run_id)
+            job_id = queue.enqueue(db_path, run_id)
         except (RunServiceError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_USAGE
@@ -892,17 +985,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         report = service.create_and_execute_run(
             prompt=prompt,
-            provider=settings.provider,
-            max_loops=settings.max_loops,
-            require_approval=settings.require_approval,
-            workspace=settings.workspace,
-            timeout_seconds=settings.timeout_seconds,
+            provider=run_settings.provider,
+            max_loops=run_settings.max_loops,
+            require_approval=run_settings.require_approval,
+            workspace=run_settings.workspace,
+            timeout_seconds=run_settings.timeout_seconds,
         )
     except (RunServiceError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     _print_step_report(report, show_next_prompt=args.show_next_prompt)
-    _print_safety_warnings(args.db_path, report.run_id)
+    _print_safety_warnings(db_path, report.run_id)
     return _exit_code_for(report)
 
 
@@ -1142,6 +1235,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_queue(args)
     if args.command == "worker":
         return _dispatch_worker(args)
+    if args.command == "config":
+        return _dispatch_config(args)
     if args.command == "run":
         if getattr(args, "run_command", None) == "cancel":
             return cmd_run_cancel(args)

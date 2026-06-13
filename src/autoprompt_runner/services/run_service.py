@@ -31,6 +31,7 @@ from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
 from ..projects import ResolvedRunSettings, resolve_run_settings
 from ..runners import AgentRunner, ClaudeCodeRunner, CodexRunner, MockRunner
+from ..settings import load_settings
 from ..state import RunStatus
 from .prompt_generator import PromptGenerator
 
@@ -97,6 +98,7 @@ def resolve_run_inputs(
     goal: Optional[str] = None,
     extra_context: Optional[str] = None,
     worktree: Optional[str] = None,
+    config_path: Optional[str] = None,
 ) -> Tuple[str, ResolvedRunSettings]:
     """Resolve and validate run inputs, shared by the CLI and the HTTP API.
 
@@ -112,6 +114,7 @@ def resolve_run_inputs(
         raise RunInputError("invalid", "provide either --prompt or --template, not both")
     if not prompt_text and not template_name:
         raise RunInputError("invalid", "--prompt or --template is required")
+    app_settings = load_settings(config_path)
     db_path = storage.init_db(db_path)
     if project:
         selected = storage.get_project_by_name(db_path, project)
@@ -120,8 +123,21 @@ def resolve_run_inputs(
     else:
         selected = storage.get_default_project(db_path)
 
-    # Workspace precedence: explicit --workspace > --worktree path > project repo_path.
-    # A named worktree is always validated (missing -> not_found, archived -> invalid).
+    # Config/env run defaults sit below a project profile and above the built-in defaults:
+    # they apply only when no project profile provides the value.
+    eff_provider = provider
+    eff_max_loops = max_loops
+    eff_timeout = timeout_seconds
+    if selected is None:
+        if eff_provider is None:
+            eff_provider = app_settings.defaults.provider
+        if eff_max_loops is None:
+            eff_max_loops = app_settings.defaults.max_loops
+        if eff_timeout is None:
+            eff_timeout = app_settings.defaults.timeout_seconds
+
+    # Workspace precedence: explicit --workspace > --worktree path > project repo_path >
+    # config default workspace. A named worktree is always validated.
     worktree_name = (worktree or "").strip()
     worktree_path: Optional[str] = None
     if worktree_name:
@@ -132,12 +148,14 @@ def resolve_run_inputs(
             raise RunInputError("invalid", f"worktree '{worktree_name}' is archived")
         worktree_path = wt.path
     effective_workspace = workspace if workspace else worktree_path
+    if not effective_workspace and selected is None and app_settings.defaults.workspace:
+        effective_workspace = app_settings.defaults.workspace
 
     settings = resolve_run_settings(
         selected,
-        provider=provider,
-        max_loops=max_loops,
-        timeout_seconds=timeout_seconds,
+        provider=eff_provider,
+        max_loops=eff_max_loops,
+        timeout_seconds=eff_timeout,
         workspace=effective_workspace,
         no_approval=no_approval,
     )
