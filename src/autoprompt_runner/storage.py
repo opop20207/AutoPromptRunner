@@ -643,6 +643,75 @@ def get_artifact(db_path: str, artifact_id: int) -> Optional[Artifact]:
         conn.close()
 
 
+# -- run logs (for polling) --------------------------------------------------
+
+_LOG_TAIL_LIMIT = 4000
+
+
+def _log_tail(text: Optional[str]) -> str:
+    """Return ``text``, or its last ``_LOG_TAIL_LIMIT`` chars, for a compact log view."""
+    if not text:
+        return ""
+    if len(text) <= _LOG_TAIL_LIMIT:
+        return text
+    return "...[truncated; showing the last 4000 characters]...\n" + text[-_LOG_TAIL_LIMIT:]
+
+
+def get_latest_step_for_run(db_path: str, run_id: int) -> Optional[StoredStep]:
+    """Return the most recent step for ``run_id`` (highest loop index), or ``None``."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM steps WHERE run_id = ? ORDER BY loop_index DESC, id DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        return _row_to_step(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_latest_artifact_by_type(db_path: str, run_id: int, artifact_type: str) -> Optional[Artifact]:
+    """Return the most recent artifact of ``artifact_type`` for ``run_id``, or ``None``."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM artifacts WHERE run_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
+            (run_id, artifact_type),
+        ).fetchone()
+        return _row_to_artifact(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_run_logs(db_path: str, run_id: int) -> Optional[dict]:
+    """Assemble a compact logs snapshot for a run, or ``None`` if the run is missing.
+
+    Combines the run status, the latest step, and the latest runner stdout/stderr
+    artifacts into the shape served by ``GET /runs/{id}/logs``. Read-only: it does not
+    change runner execution (stdout/stderr are captured after each step completes).
+    """
+    run = get_run(db_path, run_id)
+    if run is None:
+        return None
+    latest_step = get_latest_step_for_run(db_path, run_id)
+    stdout_artifact = get_latest_artifact_by_type(db_path, run_id, "runner_stdout")
+    stderr_artifact = get_latest_artifact_by_type(db_path, run_id, "runner_stderr")
+    stdout = stdout_artifact.content if stdout_artifact is not None else (latest_step.stdout if latest_step else None)
+    stderr = stderr_artifact.content if stderr_artifact is not None else (latest_step.stderr if latest_step else None)
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "generated_at": _utcnow_iso(),
+        "latest_step_id": latest_step.id if latest_step is not None else None,
+        "stdout": _log_tail(stdout),
+        "stderr": _log_tail(stderr),
+        "stdout_artifact_id": stdout_artifact.id if stdout_artifact is not None else None,
+        "stderr_artifact_id": stderr_artifact.id if stderr_artifact is not None else None,
+    }
+
+
 # -- row mappers -------------------------------------------------------------
 
 

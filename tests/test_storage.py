@@ -124,5 +124,60 @@ class StateTransitionTests(unittest.TestCase):
             validate_status_transition("CREATED", "NOPE")
 
 
+class RunLogsStorageTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+        self.run_id = storage.create_run(
+            self.db, root_prompt="p", provider="mock", max_loops=2, require_approval=False
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_get_latest_step_for_run(self):
+        storage.create_step(self.db, run_id=self.run_id, loop_index=0, prompt="a", status="DONE")
+        second = storage.create_step(self.db, run_id=self.run_id, loop_index=1, prompt="b", status="DONE")
+        latest = storage.get_latest_step_for_run(self.db, self.run_id)
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest.id, second)
+        self.assertEqual(latest.loop_index, 1)
+
+    def test_get_latest_step_none_when_no_steps(self):
+        self.assertIsNone(storage.get_latest_step_for_run(self.db, self.run_id))
+
+    def test_get_latest_artifact_by_type(self):
+        step_id = storage.create_step(self.db, run_id=self.run_id, loop_index=0, prompt="a", status="DONE")
+        storage.create_artifact(self.db, self.run_id, "runner_stdout", content="first", step_id=step_id)
+        second = storage.create_artifact(self.db, self.run_id, "runner_stdout", content="second", step_id=step_id)
+        latest = storage.get_latest_artifact_by_type(self.db, self.run_id, "runner_stdout")
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest.id, second)
+        self.assertEqual(latest.content, "second")
+        self.assertIsNone(storage.get_latest_artifact_by_type(self.db, self.run_id, "git_diff"))
+
+    def test_get_run_logs(self):
+        step_id = storage.create_step(
+            self.db, run_id=self.run_id, loop_index=0, prompt="a", status="DONE",
+            stdout="step out", stderr="step err",
+        )
+        storage.create_artifact(self.db, self.run_id, "runner_stdout", content="hello stdout", step_id=step_id)
+        storage.create_artifact(self.db, self.run_id, "runner_stderr", content="hello stderr", step_id=step_id)
+        logs = storage.get_run_logs(self.db, self.run_id)
+        self.assertIsNotNone(logs)
+        self.assertEqual(logs["run_id"], self.run_id)
+        self.assertEqual(logs["status"], RunStatus.CREATED.value)
+        self.assertEqual(logs["latest_step_id"], step_id)
+        self.assertEqual(logs["stdout"], "hello stdout")
+        self.assertEqual(logs["stderr"], "hello stderr")
+        self.assertIsNotNone(logs["stdout_artifact_id"])
+        self.assertIsNotNone(logs["stderr_artifact_id"])
+        self.assertIn("generated_at", logs)
+
+    def test_get_run_logs_missing_returns_none(self):
+        self.assertIsNone(storage.get_run_logs(self.db, 9999))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -287,7 +287,20 @@ overview, then select the `git_diff` artifact to read the full diff in the viewe
 Approval workflow: when a run is `WAITING_APPROVAL`, the **Approval** panel shows the
 pending next prompt (toggle **Show full next prompt** for the untruncated text).
 **Approve** runs the next step and **Reject** stops the run; either action reloads the
-run detail, the run list, and the artifacts. Live log streaming is not implemented yet.
+run detail, the run list, and the artifacts.
+
+### Live logs (polling)
+
+The **Live log** panel near the top of the run detail polls `GET /runs/{id}/logs` every
+2 seconds while the run is `RUNNING` or `WAITING_APPROVAL`, and stops once the run is
+`DONE`, `FAILED`, or `STOPPED`. It shows the run status, the latest step id, and the
+latest stdout/stderr in scrollable monospace blocks, with **Refresh** and
+**Pause/Resume** controls; when polling detects a terminal status the full run detail
+reloads.
+
+This is **polling, not a true stream**: because each runner writes its output when its
+step finishes, stdout/stderr update only after each step completes (not character by
+character). True streaming (SSE or WebSocket) is planned for a future step.
 
 ## Runner Providers
 

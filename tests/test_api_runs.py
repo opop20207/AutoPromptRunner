@@ -112,6 +112,21 @@ class RunApiTests(unittest.TestCase):
         self.assertEqual(resp.json()["id"], artifact_id)
         self.assertEqual(self.client.get("/artifacts/99999").status_code, 404)
 
+    def test_run_logs_for_existing_run(self):
+        run_id = self._run(max_loops=1).json()["id"]  # ends DONE; mock runner artifacts captured
+        resp = self.client.get(f"/runs/{run_id}/logs")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["run_id"], run_id)
+        self.assertEqual(body["status"], "DONE")
+        self.assertIn("generated_at", body)
+        self.assertIsNotNone(body["latest_step_id"])
+        self.assertIn("mock", body["stdout"].lower())
+        self.assertIsNotNone(body["stdout_artifact_id"])
+
+    def test_run_logs_missing_run_returns_404(self):
+        self.assertEqual(self.client.get("/runs/9999/logs").status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

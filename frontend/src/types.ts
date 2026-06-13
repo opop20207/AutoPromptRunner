@@ -116,6 +116,17 @@ export interface ArtifactDetail {
   created_at: string;
 }
 
+export interface RunLogs {
+  run_id: number;
+  status: RunStatus;
+  generated_at: string;
+  latest_step_id: number | null;
+  stdout: string;
+  stderr: string;
+  stdout_artifact_id: number | null;
+  stderr_artifact_id: number | null;
+}
+
 export interface RunDetail {
   id: number;
   status: RunStatus;

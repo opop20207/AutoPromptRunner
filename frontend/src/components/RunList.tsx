@@ -9,6 +9,10 @@ function shorten(text: string, limit = 50): string {
   return collapsed.length <= limit ? collapsed : collapsed.slice(0, limit - 1) + "…";
 }
 
+function statusClass(status: string): string {
+  return "rs rs-" + status.toLowerCase().replace(/_/g, "-");
+}
+
 export function RunList({
   refreshKey,
   onSelect,
@@ -63,7 +67,9 @@ export function RunList({
             {runs.map((run) => (
               <tr key={run.id} className="clickable" onClick={() => onSelect(run.id)}>
                 <td>{run.id}</td>
-                <td className="status">{run.status}</td>
+                <td>
+                  <span className={statusClass(run.status)}>{run.status}</span>
+                </td>
                 <td>{run.provider}</td>
                 <td className="mono">{run.created_at}</td>
                 <td>{shorten(run.prompt)}</td>

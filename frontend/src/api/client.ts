@@ -11,6 +11,7 @@ import type {
   ProjectCreate,
   RunCreate,
   RunDetail,
+  RunLogs,
   RunSummary,
 } from "../types";
 
@@ -74,6 +75,7 @@ export const api = {
     return request<ArtifactSummary[]>(`/runs/${runId}/artifacts${query}`);
   },
   getArtifact: (artifactId: number) => request<ArtifactDetail>(`/artifacts/${artifactId}`),
+  getRunLogs: (runId: number) => request<RunLogs>(`/runs/${runId}/logs`),
   approveNext: (id: number) =>
     request<RunSummary>(`/runs/${id}/approve-next`, { method: "POST" }),
   rejectNext: (id: number) =>

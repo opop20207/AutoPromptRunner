@@ -382,3 +382,63 @@ pre.block.large {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* -- live log polling -- */
+
+.livelog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fbfcfe;
+}
+
+.livelog-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.livelog-head .row-actions {
+  margin-left: auto;
+}
+
+.livelog-blocks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 760px) {
+  .livelog-blocks {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* run status emphasis in lists */
+.rs {
+  font-weight: 600;
+}
+
+.rs-running {
+  color: var(--accent);
+}
+
+.rs-waiting-approval {
+  color: #b8860b;
+}
+
+.rs-done {
+  color: var(--ok);
+}
+
+.rs-failed {
+  color: var(--error);
+}
+
+.rs-stopped,
+.rs-created {
+  color: var(--muted);
+}

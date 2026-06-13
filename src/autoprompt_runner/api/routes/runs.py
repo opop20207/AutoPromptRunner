@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from ... import storage
 from ...models import Approval, Artifact, StepExecutionReport, StoredRun, StoredStep
@@ -27,6 +28,17 @@ _PREVIEW_LIMIT = 80
 # Maps RunServiceError.kind to an HTTP status for the approve/reject endpoints.
 _APPROVE_STATUS = {"not_found": 404, "terminal": 409, "no_pending": 400}
 _REJECT_STATUS = {"not_found": 404, "no_pending": 400}
+
+
+class RunLogsResponse(BaseModel):
+    run_id: int
+    status: str
+    generated_at: str
+    latest_step_id: Optional[int] = None
+    stdout: str = ""
+    stderr: str = ""
+    stdout_artifact_id: Optional[int] = None
+    stderr_artifact_id: Optional[int] = None
 
 
 def _short(text: Optional[str], limit: int = _PREVIEW_LIMIT) -> str:
@@ -184,3 +196,11 @@ def get_artifact(artifact_id: int, db_path: str = Depends(get_db_path)) -> Artif
     if artifact is None:
         raise HTTPException(status_code=404, detail=f"artifact {artifact_id} not found")
     return _artifact_detail(artifact)
+
+
+@router.get("/runs/{run_id}/logs", response_model=RunLogsResponse)
+def run_logs(run_id: int, db_path: str = Depends(get_db_path)) -> RunLogsResponse:
+    logs = storage.get_run_logs(db_path, run_id)
+    if logs is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+    return RunLogsResponse(**logs)

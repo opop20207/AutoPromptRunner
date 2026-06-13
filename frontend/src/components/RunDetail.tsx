@@ -8,6 +8,7 @@ import { ArtifactViewer } from "./ArtifactViewer";
 import { ChangedFilesPanel } from "./ChangedFilesPanel";
 import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
+import { LiveLogPanel } from "./LiveLogPanel";
 import { StepList } from "./StepList";
 
 export function RunDetail({
@@ -84,6 +85,11 @@ export function RunDetail({
               <dt>Finished</dt>
               <dd className="mono">{detail.finished_at ?? "(none)"}</dd>
             </dl>
+          </div>
+
+          <div className="subsection">
+            <h3>Live log</h3>
+            <LiveLogPanel runId={detail.id} runStatus={detail.status} onTerminal={onChanged} />
           </div>
 
           <div className="subsection">
