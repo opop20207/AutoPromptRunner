@@ -269,5 +269,66 @@ class ArtifactCliTests(_DbTestCase):
         self.assertIn("git_diff", out)
 
 
+class CodexProviderTests(_DbTestCase):
+    _CODEX_RUN = "autoprompt_runner.runners.codex.subprocess.run"
+
+    def test_run_codex_requires_workspace(self):
+        code, out, err = run_cli(["run", "--prompt", "x", "--provider", "codex", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("workspace", err.lower())
+        self.assertIn("codex", err.lower())  # recognized provider, not "unsupported"
+        self.assertNotIn("unsupported", err.lower())
+
+    def test_run_codex_command_unavailable_stores_failed(self):
+        with mock.patch(self._CODEX_RUN, side_effect=FileNotFoundError()):
+            code, out, err = run_cli(
+                [
+                    "run", "--prompt", "Review project", "--provider", "codex",
+                    "--workspace", self.ws, "--max-loops", "1", "--db-path", self.db,
+                ]
+            )
+        self.assertNotEqual(code, 0)
+        run = storage.get_run(self.db, self._latest_run_id())
+        self.assertEqual(run.status, RunStatus.FAILED.value)
+        self.assertEqual(run.provider, "codex")
+        self.assertEqual(run.workspace, self.ws)
+        steps = storage.get_steps_for_run(self.db, run.id)
+        self.assertEqual(len(steps), 1)
+        self.assertNotEqual(steps[0].exit_code, 0)
+
+    def test_project_add_accepts_codex(self):
+        code, out, err = run_cli(
+            ["project", "add", "--name", "CX", "--repo-path", self.ws, "--provider", "codex", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(storage.get_project_by_name(self.db, "CX").default_provider, "codex")
+
+    def test_run_project_codex_uses_repo_path_workspace(self):
+        run_cli([
+            "project", "add", "--name", "CX", "--repo-path", self.ws,
+            "--provider", "codex", "--max-loops", "1", "--db-path", self.db,
+        ])
+        with mock.patch(self._CODEX_RUN, side_effect=FileNotFoundError()):
+            code, out, err = run_cli(["run", "--project", "CX", "--prompt", "Review", "--db-path", self.db])
+        self.assertNotEqual(code, 0)  # codex unavailable -> FAILED
+        run = storage.get_run(self.db, self._latest_run_id())
+        self.assertEqual(run.provider, "codex")
+        self.assertEqual(run.workspace, self.ws)  # workspace came from project repo_path
+        self.assertEqual(run.status, RunStatus.FAILED.value)
+
+    def test_claude_code_still_recognized(self):
+        code, out, err = run_cli(["run", "--prompt", "x", "--provider", "claude-code", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("workspace", err.lower())
+        self.assertNotIn("unsupported", err.lower())
+
+    def test_mock_still_works_without_workspace(self):
+        code, out, err = run_cli(
+            ["run", "--prompt", "p", "--provider", "mock", "--max-loops", "1", "--no-approval", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(storage.get_run(self.db, self._latest_run_id()).status, RunStatus.DONE.value)
+
+
 if __name__ == "__main__":
     unittest.main()

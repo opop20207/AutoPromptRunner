@@ -28,7 +28,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from .. import artifacts, storage
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
-from ..runners import AgentRunner, ClaudeCodeRunner, MockRunner
+from ..runners import AgentRunner, ClaudeCodeRunner, CodexRunner, MockRunner
 from ..state import RunStatus
 from .prompt_generator import PromptGenerator
 
@@ -50,10 +50,18 @@ def _claude_code_factory(workspace: Optional[str], timeout_seconds: Optional[int
     )
 
 
-# Supported providers and how to construct each runner. Only mock and claude-code.
+def _codex_factory(workspace: Optional[str], timeout_seconds: Optional[int]) -> AgentRunner:
+    return CodexRunner(
+        workspace=workspace,
+        timeout_seconds=timeout_seconds if timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+# Supported providers and how to construct each runner: mock, claude-code, and codex.
 DEFAULT_PROVIDER_FACTORIES: Dict[str, ProviderFactory] = {
     "mock": _mock_factory,
     "claude-code": _claude_code_factory,
+    "codex": _codex_factory,
 }
 
 

@@ -50,8 +50,8 @@ def resolve_run_settings(
 
     Explicit (non-``None``) arguments win. ``no_approval`` is the only explicit way to
     set ``require_approval`` to ``False``; otherwise the project's value (then the
-    built-in default ``True``) is used. For the claude-code provider, the workspace
-    falls back to the project's ``repo_path`` when ``--workspace`` is not given.
+    built-in default ``True``) is used. For a real provider (claude-code or codex), the
+    workspace falls back to the project's ``repo_path`` when ``--workspace`` is not given.
     """
     resolved_provider = provider or (project.default_provider if project else None) or BUILTIN_PROVIDER
 
@@ -77,7 +77,7 @@ def resolve_run_settings(
         resolved_require_approval = BUILTIN_REQUIRE_APPROVAL
 
     resolved_workspace = workspace
-    if resolved_workspace is None and resolved_provider == "claude-code" and project is not None:
+    if resolved_workspace is None and resolved_provider != BUILTIN_PROVIDER and project is not None:
         resolved_workspace = project.repo_path
 
     return ResolvedRunSettings(

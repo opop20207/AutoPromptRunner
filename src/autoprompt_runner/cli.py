@@ -37,6 +37,9 @@ from .state import RunStatus
 # Provider names the CLI accepts (resolution/construction lives in RunService).
 SUPPORTED_PROVIDERS = tuple(sorted(DEFAULT_PROVIDER_FACTORIES))
 
+# Providers that require a workspace directory to run.
+WORKSPACE_REQUIRED_PROVIDERS = ("claude-code", "codex")
+
 # Exit codes.
 EXIT_OK = 0
 EXIT_RUN_FAILED = 1
@@ -335,10 +338,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if settings.timeout_seconds < 1:
         print("error: --timeout-seconds must be >= 1", file=sys.stderr)
         return EXIT_USAGE
-    if settings.provider == "claude-code":
+    if settings.provider in WORKSPACE_REQUIRED_PROVIDERS:
         if not settings.workspace:
             print(
-                "error: --workspace is required for the claude-code provider "
+                f"error: --workspace is required for the {settings.provider} provider "
                 "(pass --workspace or use a project repo_path)",
                 file=sys.stderr,
             )

@@ -8,8 +8,9 @@ remote service is required to run it.
 The CLI runs a bounded prompt loop, persists run history to a local SQLite database,
 gates each generated next prompt behind an approval by default, supports reusable
 project profiles, and captures the Git state around each step (read-only) so every run
-records what changed. Two providers are available: `mock` (offline, deterministic) and
-`claude-code` (the real Claude Code CLI). There are no third-party runtime dependencies
+records what changed. Three providers are available: `mock` (offline, deterministic),
+`claude-code` (the real Claude Code CLI), and `codex` (the real Codex CLI). There are no
+third-party runtime dependencies
 (standard library only).
 
 ## MVP Workflow
@@ -158,13 +159,38 @@ The `claude-code` provider runs the real Claude Code CLI as a subprocess.
   workspace. Point `--workspace` only at a project you intend Claude Code to change,
   ideally one tracked in version control.
 
+## Codex provider
+
+The `codex` provider runs the Codex CLI as a subprocess, using the same provider adapter
+model as `claude-code`. All Codex-specific CLI details are isolated inside `CodexRunner`.
+
+- **Requirement:** the Codex CLI must already be installed and authenticated.
+  AutoPromptRunner does not install it and never handles API keys.
+- **Example:**
+
+  ```
+  python -m autoprompt_runner.cli run \
+    --prompt "Review this project and suggest the next smallest implementation task" \
+    --provider codex --workspace /path/to/project --max-loops 1
+  ```
+
+- **Workspace:** `--workspace` is required for `codex` and must be an existing directory
+  (or supplied via a project's `repo_path`). Codex runs in non-interactive execution
+  mode (`codex exec`) inside that directory.
+- **Timeout:** `--timeout-seconds` (default 1800, >= 1) bounds the subprocess; timeouts
+  and a missing `codex` command are captured as clean non-zero results.
+- **Approval gate:** identical to the mock and claude-code providers.
+- **Safety warning:** Codex may create, modify, or delete files inside the workspace.
+  Point `--workspace` only at a project you intend Codex to change, ideally one tracked
+  in version control.
+
 ## Runner Providers
 
 | Provider | Class | Status | Description |
 | --- | --- | --- | --- |
 | `mock` | `MockRunner` | Available | Deterministic, offline runner used for tests and dry runs. Default provider. |
 | `claude-code` | `ClaudeCodeRunner` | Available | Runs the Claude Code CLI as a subprocess inside a workspace. |
-| `codex` | `CodexRunner` | Planned | Invocation of the Codex coding agent CLI. |
+| `codex` | `CodexRunner` | Available | Runs the Codex CLI as a subprocess inside a workspace. |
 
 ## Tests
 
