@@ -40,6 +40,37 @@ with a PENDING approval; `--no-approval` auto-runs up to `--max-loops`. `max_loo
 a hard bound, so the loop can never run forever. Status follows
 `CREATED -> RUNNING -> WAITING_APPROVAL -> DONE / FAILED / STOPPED`.
 
+## Next-prompt generation
+
+The next prompt is produced by a **rule-based** generator -- it calls no external AI
+APIs and uses no network. It chooses an outcome-specific prompt from the step context
+(root prompt, previous prompt, stdout, stderr, exit code, loop index, max loops, the
+changed files, and the git diff stat):
+
+- **Success with changed files** -> review the changed files, run/improve tests, do the
+  next smallest task, do not expand scope.
+- **Success with no changed files** -> check whether the task is already complete and
+  make only the next smallest concrete change if needed.
+- **Failure with stderr** -> fix using stderr as the primary source, do not expand
+  scope, re-run, and report remaining blockers.
+- **Failure without stderr** -> diagnose from stdout and workspace state and make a
+  minimal fix.
+- **Test-failure output** (traceback, AssertionError, "failed", pytest/unittest, ...)
+  -> fix the failing tests first while preserving intended behavior.
+- **Many changed files** -> review the broad changes, reduce scope, and check for
+  accidental modifications.
+- **Final loop** (`loop_index + 1 >= max_loops`) -> wrap up: summarize work and list
+  remaining tasks; do not start large new work.
+
+Generated prompts are compact and actionable and contain no invented file paths or test
+results. Add `--show-next-prompt` to `run` or `approve-next` to print the full generated
+prompt instead of only the compact preview:
+
+```
+python -m autoprompt_runner.cli run --prompt "Continue next task" --max-loops 3 --show-next-prompt
+python -m autoprompt_runner.cli approve-next --run-id 1 --show-next-prompt
+```
+
 ## Persistence
 
 Run history is stored in a local SQLite database (standard-library `sqlite3`). By

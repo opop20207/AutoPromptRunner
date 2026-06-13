@@ -126,6 +126,19 @@ class MockProviderFlowTests(_DbTestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("not found", err.lower())
 
+    def test_show_next_prompt_prints_full_block(self):
+        code, out, err = run_cli(
+            ["run", "--prompt", "Improve the project", "--max-loops", "3", "--show-next-prompt", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("Next prompt (full):", out)
+
+    def test_without_show_next_prompt_omits_full_block(self):
+        code, out, err = run_cli(["run", "--prompt", "Improve the project", "--max-loops", "3", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertNotIn("Next prompt (full):", out)
+        self.assertIn("next_prompt :", out)  # compact preview line still present
+
 
 class ClaudeCodeProviderTests(_DbTestCase):
     def test_run_claude_code_command_unavailable_stores_failed(self):

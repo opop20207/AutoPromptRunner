@@ -1,14 +1,32 @@
-"""Deterministic next-prompt generation.
+"""Rule-based next-prompt generation.
 
-``PromptGenerator`` turns a completed step's result into the next prompt using simple,
-fixed templates. It calls no external AI APIs, uses no network access, and invents no
-file changes -- it only restates the task and forwards the relevant prior output so the
-next step can continue or fix the failure safely.
+``PromptGenerator`` turns a completed step's context into the next prompt using a small
+set of explicit, deterministic rules keyed on the execution outcome (success/failure),
+whether files changed, how many changed, whether the output looks like a test failure,
+and how close the run is to ``max_loops``. It calls no external AI APIs, uses no
+network access, and invents no file changes, paths, or test results -- it only restates
+the task and forwards the relevant prior signal so the next step can proceed safely.
 """
 
 from __future__ import annotations
 
-from ..models import NextPrompt
+from ..models import NextPrompt, PromptGenerationContext
+
+# Substrings (lower-cased) that signal a likely test/failure in runner output. Kept
+# specific so benign output -- including echoed prompts that mention "tests" -- does not
+# trip the detector.
+_TEST_FAILURE_INDICATORS = (
+    "traceback",
+    "assertionerror",
+    "assertion error",
+    "pytest",
+    "unittest",
+    "failed",
+    "failure",
+)
+
+# A changed-file count above this is treated as a broad change worth reviewing.
+_MANY_FILES_THRESHOLD = 5
 
 
 def _short(text: str, limit: int) -> str:
@@ -19,43 +37,92 @@ def _short(text: str, limit: int) -> str:
     return collapsed[: max(0, limit - 3)] + "..."
 
 
+def _looks_like_test_failure(stdout: str, stderr: str) -> bool:
+    text = f"{stdout}\n{stderr}".lower()
+    return any(indicator in text for indicator in _TEST_FAILURE_INDICATORS)
+
+
 class PromptGenerator:
-    """Generate a compact, deterministic next prompt from a step result."""
+    """Generate a compact, actionable, deterministic next prompt from step context."""
 
-    def generate(
-        self,
-        root_prompt: str,
-        previous_prompt: str,
-        stdout: str,
-        stderr: str,
-        exit_code: int,
-        loop_index: int,
-    ) -> NextPrompt:
-        """Return the next prompt for the step after ``loop_index``.
+    def generate(self, context: PromptGenerationContext) -> NextPrompt:
+        """Return the next prompt for the step after ``context.loop_index``.
 
-        ``exit_code == 0`` yields a "continue" prompt focused on verifying and
-        advancing; a non-zero ``exit_code`` yields a "fix" prompt focused on the
-        failure. Output is deterministic: the same inputs always produce the same text.
+        Output is deterministic: identical context always produces identical text.
         """
-        root_short = _short(root_prompt, 80)
-        next_index = loop_index + 1
+        root = _short(context.root_prompt, 80)
+        next_index = context.loop_index + 1
+        if context.exit_code != 0:
+            return self._failure_prompt(context, root, next_index)
+        return self._success_prompt(context, root, next_index)
 
-        if exit_code == 0:
+    # -- failure outcomes -----------------------------------------------------
+
+    def _failure_prompt(self, ctx: PromptGenerationContext, root: str, next_index: int) -> NextPrompt:
+        if _looks_like_test_failure(ctx.stdout, ctx.stderr):
             prompt = (
-                "Continue from the previous completed step. "
-                "Review the changes, identify the next smallest implementation task, "
-                "apply it, run relevant tests, and report changed files. "
-                "Do not expand scope beyond the original task. "
-                f'Original task: "{root_short}". '
-                f"(step {loop_index} succeeded, exit 0; output: {_short(stdout, 120)})"
+                "Fix the failing tests from the previous step first. Use the test output as the primary "
+                "source and preserve the intended behavior. Re-run the relevant test target and report "
+                f'remaining failures. Do not expand scope. Task: "{root}".'
+            )
+            return NextPrompt(prompt=prompt, kind="fix_tests", loop_index=next_index)
+
+        if ctx.stderr.strip():
+            prompt = (
+                "Fix the failure from the previous step. Use stderr as the primary source: "
+                f"{_short(ctx.stderr, 160)}. Do not expand scope. Re-run the relevant command or tests and "
+                f'report remaining blockers. Task: "{root}".'
+            )
+            return NextPrompt(prompt=prompt, kind="fix", loop_index=next_index)
+
+        prompt = (
+            f"Diagnose the failed previous step (exit code {ctx.exit_code}). There was no stderr; check the "
+            "stdout output and the workspace state, then make a minimal fix. Do not expand scope. "
+            f'Task: "{root}". Previous output: {_short(ctx.stdout, 120)}'
+        )
+        return NextPrompt(prompt=prompt, kind="diagnose", loop_index=next_index)
+
+    # -- success outcomes -----------------------------------------------------
+
+    def _success_prompt(self, ctx: PromptGenerationContext, root: str, next_index: int) -> NextPrompt:
+        changed = [f for f in (ctx.changed_files or []) if f]
+        count = len(changed)
+
+        if ctx.loop_index + 1 >= ctx.max_loops:
+            prompt = (
+                "This is the final allowed loop. Summarize the work completed so far and list any remaining "
+                f'tasks as concrete next steps. Do not start large new work. Task: "{root}".'
+            )
+            return NextPrompt(prompt=prompt, kind="wrapup", loop_index=next_index)
+
+        if _looks_like_test_failure(ctx.stdout, ctx.stderr):
+            prompt = (
+                "The previous output indicates failing tests. Fix the failing tests first while preserving the "
+                "intended behavior, then re-run the relevant test target and report results. Do not expand "
+                f'scope. Task: "{root}".'
+            )
+            return NextPrompt(prompt=prompt, kind="fix_tests", loop_index=next_index)
+
+        if count > _MANY_FILES_THRESHOLD:
+            prompt = (
+                f"The previous step changed many files ({count}). Review the broad changes, reduce scope if the "
+                "change grew too large, and check for accidental or unrelated modifications before continuing. "
+                f'Task: "{root}". Diff stat: {_short(ctx.git_diff_stat, 100)}'
+            )
+            return NextPrompt(prompt=prompt, kind="review_broad", loop_index=next_index)
+
+        if count > 0:
+            listed = _short(", ".join(changed[:5]), 100)
+            prompt = (
+                f"Review the changed files from the previous step: {listed}. Run or improve the relevant tests, "
+                "then continue with the next smallest task. Do not expand scope beyond the original task. "
+                f'Task: "{root}".'
             )
             return NextPrompt(prompt=prompt, kind="continue", loop_index=next_index)
 
         prompt = (
-            "Fix the failure from the previous step. "
-            "Use stderr and failing output as the primary source. Do not expand scope. "
-            "Run relevant tests again and report remaining failures. "
-            f'Original task: "{root_short}". '
-            f"(step {loop_index} failed, exit {exit_code}; stderr: {_short(stderr, 160)})"
+            "The previous step reported success but changed no files. Determine whether the task is already "
+            "complete; if it is, say so explicitly. If not, make the next smallest concrete change only. Do "
+            f'not expand scope. Task: "{root}".'
         )
-        return NextPrompt(prompt=prompt, kind="fix", loop_index=next_index)
+        return NextPrompt(prompt=prompt, kind="no_changes", loop_index=next_index)

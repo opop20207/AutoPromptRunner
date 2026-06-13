@@ -96,12 +96,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout-seconds", dest="timeout_seconds", type=int, default=None,
         help="Subprocess timeout in seconds (>= 1). Overrides the project default.",
     )
+    run_parser.add_argument(
+        "--show-next-prompt", dest="show_next_prompt", action="store_true",
+        help="Print the full generated next prompt instead of only a compact preview.",
+    )
     _add_db_path(run_parser)
 
     approve_parser = subparsers.add_parser(
         "approve-next", help="Approve a run's pending next prompt and execute it."
     )
     approve_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    approve_parser.add_argument(
+        "--show-next-prompt", dest="show_next_prompt", action="store_true",
+        help="Print the full generated next prompt instead of only a compact preview.",
+    )
     _add_db_path(approve_parser)
 
     reject_parser = subparsers.add_parser(
@@ -352,7 +360,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     except (RunServiceError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    _print_step_report(report)
+    _print_step_report(report, show_next_prompt=args.show_next_prompt)
     return _exit_code_for(report)
 
 
@@ -363,7 +371,7 @@ def cmd_approve_next(args: argparse.Namespace) -> int:
     except (RunServiceError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_NOT_FOUND
-    _print_step_report(report)
+    _print_step_report(report, show_next_prompt=args.show_next_prompt)
     return _exit_code_for(report)
 
 
@@ -504,8 +512,12 @@ def _shorten(text: Optional[str], limit: int) -> str:
     return collapsed[: max(0, limit - 3)] + "..."
 
 
-def _print_step_report(report: StepExecutionReport) -> None:
-    """Print a compact report for a run step / advance."""
+def _print_step_report(report: StepExecutionReport, show_next_prompt: bool = False) -> None:
+    """Print a compact report for a run step / advance.
+
+    With ``show_next_prompt`` the full generated next prompt is printed after the
+    compact report; otherwise only the truncated preview line is shown.
+    """
     lines = [
         "Run report",
         f"  run_id      : {report.run_id}",
@@ -520,6 +532,9 @@ def _print_step_report(report: StepExecutionReport) -> None:
     if report.message:
         lines.append(f"  note        : {report.message}")
     print("\n".join(lines))
+    if show_next_prompt and report.next_prompt:
+        print("Next prompt (full):")
+        print(report.next_prompt)
 
 
 def _dispatch_project(args: argparse.Namespace) -> int:

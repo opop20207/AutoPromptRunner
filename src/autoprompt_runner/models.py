@@ -6,8 +6,8 @@ runners, the storage layer, and the services. They carry no behavior.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 
 @dataclass
@@ -152,11 +152,35 @@ class Artifact:
 
 
 @dataclass
+class PromptGenerationContext:
+    """Everything the PromptGenerator needs to choose the next prompt.
+
+    Combines the run intent (root/previous prompt, loop bounds, approval mode), the
+    runner result (stdout/stderr/exit_code), and the read-only Git signal
+    (changed_files, git_diff_stat) captured for the step.
+    """
+
+    root_prompt: str
+    previous_prompt: str
+    exit_code: int
+    loop_index: int
+    max_loops: int
+    stdout: str = ""
+    stderr: str = ""
+    changed_files: List[str] = field(default_factory=list)
+    git_diff_stat: str = ""
+    provider: str = "mock"
+    workspace: Optional[str] = None
+    require_approval: bool = True
+
+
+@dataclass
 class NextPrompt:
     """A generated next prompt and how it was derived.
 
-    ``kind`` is ``"continue"`` when the previous step succeeded or ``"fix"`` when it
-    failed. ``loop_index`` is the index of the step this prompt would drive next.
+    ``kind`` labels the rule that produced it (for example ``"continue"``, ``"fix"``,
+    ``"fix_tests"``, ``"wrapup"``). ``loop_index`` is the index of the step this prompt
+    would drive next.
     """
 
     prompt: str
