@@ -1,7 +1,7 @@
 """Core data structures for AutoPromptRunner.
 
 These dataclasses are intentionally simple containers shared between the CLI, the
-runners, and (later) the orchestrator and persistence layers. They carry no behavior.
+runners, the storage layer, and (later) the orchestrator. They carry no behavior.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ class RunRequest:
 
     ``require_approval`` reflects the default approval gate; when it is ``False`` the
     caller has explicitly opted into auto-run. The loop bound ``max_loops`` is carried
-    here but not yet exercised by the single-step skeleton.
+    here but not yet exercised by the single-step run.
     """
 
     prompt: str
@@ -54,4 +54,44 @@ class RunReport:
     provider: str
     prompt: str
     result: Optional[AgentResult] = None
+    next_prompt: Optional[str] = None
+
+
+@dataclass
+class StoredRun:
+    """A run row as persisted in the ``runs`` table.
+
+    ``require_approval`` is stored as an integer (0/1) in SQLite but exposed here as a
+    ``bool``. ``project_id`` and ``finished_at`` are ``None`` until set.
+    """
+
+    id: int
+    project_id: Optional[int]
+    root_prompt: str
+    provider: str
+    status: str
+    max_loops: int
+    require_approval: bool
+    created_at: str
+    finished_at: Optional[str] = None
+
+
+@dataclass
+class StoredStep:
+    """A step row as persisted in the ``steps`` table.
+
+    Captures the per-execution fields required by AGENTS.md: stdout, stderr,
+    exit_code, started_at, and finished_at, plus the generated ``next_prompt``.
+    """
+
+    id: int
+    run_id: int
+    loop_index: int
+    prompt: str
+    status: str
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    exit_code: Optional[int] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
     next_prompt: Optional[str] = None
