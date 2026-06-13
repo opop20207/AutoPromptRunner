@@ -93,6 +93,28 @@ class Template:
 
 
 @dataclass
+class Worktree:
+    """A Git worktree profile for an isolated parallel session, in ``worktrees``.
+
+    Each worktree binds a project to a checked-out branch in its own directory on disk so
+    parallel agent sessions never share one working tree. ``status`` is one of
+    ``ACTIVE`` / ``LOCKED`` / ``ARCHIVED`` (see ``autoprompt_runner.worktrees``); the row
+    only tracks the worktree -- the files on disk are managed solely through
+    ``git worktree`` commands.
+    """
+
+    id: int
+    project_id: int
+    name: str
+    branch: str
+    path: str
+    base_branch: Optional[str]
+    status: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

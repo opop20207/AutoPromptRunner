@@ -16,6 +16,8 @@ import type {
   Template,
   TemplateCreate,
   TemplateRender,
+  Worktree,
+  WorktreeCreate,
 } from "../types";
 
 const BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -95,6 +97,19 @@ export const api = {
     request<{ name: string; rendered: string }>(`/templates/${encodeURIComponent(name)}/render`, {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  listWorktrees: (project?: string) => {
+    const query = project ? `?project=${encodeURIComponent(project)}` : "";
+    return request<Worktree[]>(`/worktrees${query}`);
+  },
+  createWorktree: (body: WorktreeCreate) =>
+    request<Worktree>("/worktrees", { method: "POST", body: JSON.stringify(body) }),
+  getWorktree: (name: string) => request<Worktree>(`/worktrees/${encodeURIComponent(name)}`),
+  archiveWorktree: (name: string) =>
+    request<Worktree>(`/worktrees/${encodeURIComponent(name)}/archive`, { method: "POST" }),
+  deleteWorktree: (name: string, force = false) =>
+    request<unknown>(`/worktrees/${encodeURIComponent(name)}${force ? "?force=true" : ""}`, {
+      method: "DELETE",
     }),
 };
 

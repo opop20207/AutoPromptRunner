@@ -37,6 +37,19 @@ def run_cli(argv):
     return code, out.getvalue(), err.getvalue()
 
 
+_GIT_ENV = ["-c", "user.email=t@example.com", "-c", "user.name=test"]
+
+
+def _init_repo(path):
+    """Create a Git repo with one commit so worktrees have a HEAD to branch from."""
+    os.makedirs(path, exist_ok=True)
+    subprocess.run(["git", *_GIT_ENV, "init", "-q"], cwd=path, capture_output=True, text=True)
+    with open(os.path.join(path, "README.md"), "w", encoding="utf-8") as handle:
+        handle.write("seed\n")
+    subprocess.run(["git", *_GIT_ENV, "add", "."], cwd=path, capture_output=True, text=True)
+    subprocess.run(["git", *_GIT_ENV, "commit", "-q", "-m", "init"], cwd=path, capture_output=True, text=True)
+
+
 class VersionCommandTests(unittest.TestCase):
     def test_version_command_succeeds(self):
         code, out, err = run_cli(["version"])
@@ -430,6 +443,103 @@ class RunFromTemplateCliTests(_DbTestCase):
     def test_run_missing_template_exits_nonzero(self):
         run_cli(["init-db", "--db-path", self.db])
         code, out, err = run_cli(["run", "--template", "nope", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err.lower())
+
+
+class WorktreeCliTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        self.repo = os.path.join(self._tmp.name, "repo")
+        _init_repo(self.repo)
+        code, _out, err = run_cli([
+            "project", "add", "--name", "P", "--repo-path", self.repo,
+            "--provider", "mock", "--db-path", self.db,
+        ])
+        self.assertEqual(code, 0, err)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _latest_run_id(self):
+        return storage.list_runs(self.db)[0].id
+
+    def _create(self, name="ui-session", branch=None):
+        return run_cli([
+            "worktree", "create", "--project", "P", "--name", name,
+            "--branch", branch or f"autoprompt/{name}", "--db-path", self.db,
+        ])
+
+    def test_create_list_show(self):
+        code, out, err = self._create()
+        self.assertEqual(code, 0, err)
+        wt = storage.get_worktree_by_name(self.db, "ui-session")
+        self.assertIsNotNone(wt)
+        self.assertTrue(os.path.isdir(wt.path))
+        code, out, err = run_cli(["worktree", "list", "--project", "P", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("ui-session", out)
+        code, out, err = run_cli(["worktree", "show", "--name", "ui-session", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("autoprompt/ui-session", out)
+
+    def test_create_invalid_name_rejected(self):
+        code, out, err = run_cli([
+            "worktree", "create", "--project", "P", "--name", "bad/name",
+            "--branch", "autoprompt/x", "--db-path", self.db,
+        ])
+        self.assertNotEqual(code, 0)
+        self.assertIn("name", err.lower())
+
+    def test_archive_keeps_disk_files(self):
+        self._create()
+        wt = storage.get_worktree_by_name(self.db, "ui-session")
+        code, out, err = run_cli(["worktree", "archive", "--name", "ui-session", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertEqual(storage.get_worktree_by_name(self.db, "ui-session").status, "ARCHIVED")
+        self.assertTrue(os.path.isdir(wt.path))  # disk files kept
+
+    def test_remove_deletes_record_and_dir(self):
+        self._create()
+        wt = storage.get_worktree_by_name(self.db, "ui-session")
+        code, out, err = run_cli(["worktree", "remove", "--name", "ui-session", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(storage.get_worktree_by_name(self.db, "ui-session"))
+        self.assertFalse(os.path.isdir(wt.path))
+
+    def test_run_uses_worktree_path_as_workspace(self):
+        self._create()
+        wt = storage.get_worktree_by_name(self.db, "ui-session")
+        code, out, err = run_cli([
+            "run", "--project", "P", "--worktree", "ui-session", "--prompt", "p",
+            "--provider", "mock", "--max-loops", "1", "--no-approval", "--db-path", self.db,
+        ])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(storage.get_run(self.db, self._latest_run_id()).workspace, wt.path)
+
+    def test_explicit_workspace_overrides_worktree(self):
+        self._create()
+        code, out, err = run_cli([
+            "run", "--project", "P", "--worktree", "ui-session", "--workspace", self.repo,
+            "--prompt", "p", "--provider", "mock", "--max-loops", "1", "--no-approval", "--db-path", self.db,
+        ])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(storage.get_run(self.db, self._latest_run_id()).workspace, self.repo)
+
+    def test_run_archived_worktree_rejected(self):
+        self._create()
+        run_cli(["worktree", "archive", "--name", "ui-session", "--db-path", self.db])
+        code, out, err = run_cli([
+            "run", "--project", "P", "--worktree", "ui-session", "--prompt", "p", "--db-path", self.db,
+        ])
+        self.assertNotEqual(code, 0)
+        self.assertIn("archived", err.lower())
+
+    def test_run_missing_worktree_rejected(self):
+        code, out, err = run_cli([
+            "run", "--project", "P", "--worktree", "nope", "--prompt", "p", "--db-path", self.db,
+        ])
         self.assertNotEqual(code, 0)
         self.assertIn("not found", err.lower())
 

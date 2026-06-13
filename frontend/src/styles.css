@@ -434,6 +434,12 @@ pre.block.large {
   font-size: 11px;
 }
 
+/* -- worktrees -- */
+.worktrees td.mono {
+  max-width: 320px;
+  white-space: normal;
+}
+
 /* run status emphasis in lists */
 .rs {
   font-weight: 600;

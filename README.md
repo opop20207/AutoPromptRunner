@@ -218,6 +218,74 @@ template. *New Run* has a template selector plus *Goal* and *Extra context* fiel
 template to run from it (the direct prompt is disabled while a template is selected) and
 use *Preview rendered prompt* to see the rendered text before starting the run.
 
+## Parallel sessions with Git worktrees
+
+Parallel agent sessions must **not** run inside the same working tree: two agents editing
+one directory at once corrupt each other's changes and the Git state. AutoPromptRunner
+gives each parallel session its own **Git worktree** -- an isolated directory on its own
+branch, linked to the same repository -- so sessions never collide. A worktree profile
+(project, name, branch, base_branch, path, status of `ACTIVE` / `LOCKED` / `ARCHIVED`) is
+recorded in the database; the directory itself is managed **only** through
+`git worktree` commands.
+
+Worktrees are created under `.autoprompt/worktrees/{project_name}/{worktree_name}`.
+
+```
+python -m autoprompt_runner.cli worktree create \
+  --project FactoryColony --name ui-session \
+  --branch autoprompt/ui-session --base-branch main
+python -m autoprompt_runner.cli worktree list --project FactoryColony
+python -m autoprompt_runner.cli worktree show --name ui-session
+python -m autoprompt_runner.cli worktree archive --name ui-session   # keeps the files on disk
+python -m autoprompt_runner.cli worktree remove --name ui-session    # git worktree remove + drop record
+```
+
+Run inside a worktree's isolated path with `--worktree`:
+
+```
+python -m autoprompt_runner.cli run --project FactoryColony \
+  --worktree ui-session --template "Continue next task" \
+  --goal "Implement UI shell improvements"
+```
+
+**Workspace override precedence** (highest first):
+
+1. explicit `--workspace`,
+2. the selected `--worktree` path,
+3. the selected project's `repo_path`,
+4. the default project's `repo_path`.
+
+A named worktree is always validated: a missing worktree is a clean "not found" error and
+an `ARCHIVED` worktree is refused. (For the inverse safety rule -- never run two sessions
+in one directory -- create a separate worktree per session rather than pointing multiple
+runs at the same path.)
+
+**Safe removal.** Removal uses `git worktree remove` only -- the tool never deletes a
+worktree folder manually and never runs `reset` / `clean` / `push` / `pull` / `merge` /
+`rebase`. `remove` refuses a worktree that has an active (RUNNING / WAITING_APPROVAL) run
+unless `--force` is given (which also passes `--force` to `git worktree remove` for a
+dirty worktree); the DB record is dropped only after the git removal succeeds, and run
+history is never deleted. `archive` only flips the status to `ARCHIVED` and leaves every
+file on disk untouched.
+
+API (`/worktrees` route group; `POST /runs` also accepts a `worktree` field with the same
+precedence and `400`/`404` rules):
+
+```
+curl -X POST http://127.0.0.1:8000/worktrees \
+  -H "Content-Type: application/json" \
+  -d '{"project":"FactoryColony","name":"ui-session","branch":"autoprompt/ui-session","base_branch":"main"}'
+curl http://127.0.0.1:8000/worktrees
+curl http://127.0.0.1:8000/worktrees/ui-session
+curl -X POST http://127.0.0.1:8000/worktrees/ui-session/archive
+curl -X DELETE http://127.0.0.1:8000/worktrees/ui-session
+```
+
+In the **web UI**, *New Worktree* creates one (project, name, branch, base branch); the
+*Worktrees* section lists them (project, name, branch, status, path) with *Archive* and
+*Remove* (with a confirmation), and *New Run* has a worktree selector that shows the
+resolved workspace path.
+
 ## Git artifact capture
 
 When a run's workspace is a Git repository, each step records read-only Git artifacts:

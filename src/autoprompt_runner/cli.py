@@ -7,6 +7,8 @@ CLI-first entry point (see PROJECT.md). Commands:
 * ``project``        -- manage project profiles (add / list / show / set-default / delete).
 * ``template``       -- manage reusable prompt templates (seed / list / show / add /
   delete / render).
+* ``worktree``       -- manage isolated Git worktrees for parallel sessions (create /
+  list / show / archive / remove).
 * ``run``            -- start a run; execute the first step, generate the next prompt,
   and pause at a pending approval (default) or auto-run up to ``--max-loops``.
 * ``approve-next``   -- approve a run's pending next prompt and execute it.
@@ -29,7 +31,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, safety, storage, templates
+from . import __version__, safety, storage, templates, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -81,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_project_commands(subparsers)
     _add_template_commands(subparsers)
+    _add_worktree_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -119,6 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--workspace", default=None,
         help="Workspace directory. Required for claude-code; defaults to the project repo_path.",
+    )
+    run_parser.add_argument(
+        "--worktree", default=None,
+        help="Run inside this Git worktree's path (overridden by an explicit --workspace).",
     )
     run_parser.add_argument(
         "--timeout-seconds", dest="timeout_seconds", type=int, default=None,
@@ -240,6 +247,40 @@ def _add_template_commands(subparsers: argparse._SubParsersAction) -> None:
         "--extra-context", dest="extra_context", default=None, help="Value for {{extra_context}}."
     )
     _add_db_path(render_parser)
+
+
+def _add_worktree_commands(subparsers: argparse._SubParsersAction) -> None:
+    worktree_parser = subparsers.add_parser("worktree", help="Manage isolated Git worktrees for parallel sessions.")
+    worktree_sub = worktree_parser.add_subparsers(dest="worktree_command", metavar="subcommand")
+
+    create_parser = worktree_sub.add_parser("create", help="Create a Git worktree and record it.")
+    create_parser.add_argument("--project", required=True, help="Project whose repo the worktree branches from.")
+    create_parser.add_argument("--name", required=True, help="Unique worktree name (one safe path component).")
+    create_parser.add_argument("--branch", required=True, help="New branch to create for the worktree.")
+    create_parser.add_argument("--base-branch", dest="base_branch", default=None, help="Branch/commit to start from.")
+    _add_db_path(create_parser)
+
+    list_parser = worktree_sub.add_parser("list", help="List recorded worktrees (optionally by project).")
+    list_parser.add_argument("--project", default=None, help="Only list worktrees for this project.")
+    _add_db_path(list_parser)
+
+    show_parser = worktree_sub.add_parser("show", help="Show a worktree's detail.")
+    show_parser.add_argument("--name", required=True, help="Worktree name.")
+    _add_db_path(show_parser)
+
+    archive_parser = worktree_sub.add_parser("archive", help="Mark a worktree ARCHIVED (disk files are kept).")
+    archive_parser.add_argument("--name", required=True, help="Worktree name.")
+    _add_db_path(archive_parser)
+
+    remove_parser = worktree_sub.add_parser(
+        "remove", help="Remove a worktree via 'git worktree remove' and delete its record."
+    )
+    remove_parser.add_argument("--name", required=True, help="Worktree name.")
+    remove_parser.add_argument(
+        "--force", dest="force", action="store_true",
+        help="Pass --force to git worktree remove and override the active-run guard.",
+    )
+    _add_db_path(remove_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -511,6 +552,133 @@ def _dispatch_template(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- worktree commands -------------------------------------------------------
+
+
+def cmd_worktree_create(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    project = storage.get_project_by_name(db_path, args.project)
+    if project is None:
+        print(f"error: project '{args.project}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    if not project.repo_path or not os.path.isdir(project.repo_path):
+        print(f"error: project repo_path does not exist or is not a directory: {project.repo_path}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        name = worktrees.validate_worktree_name(args.name)
+        branch = worktrees.validate_branch_name(args.branch)
+    except worktrees.WorktreeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if storage.get_worktree_by_name(db_path, name) is not None:
+        print(f"error: worktree '{name}' already exists", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        path = worktrees.prepare_worktree_path(db_path, project.name, name)
+        worktrees.create_git_worktree(project.repo_path, path, branch, args.base_branch)
+    except worktrees.WorktreeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUN_FAILED
+    worktree_id = storage.create_worktree_record(
+        db_path, project_id=project.id, name=name, branch=branch, path=path,
+        base_branch=args.base_branch, status=worktrees.WORKTREE_ACTIVE,
+    )
+    print(f"Created worktree '{name}' (id {worktree_id}) at {path} on branch {branch}.")
+    return EXIT_OK
+
+
+def cmd_worktree_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    if args.project:
+        project = storage.get_project_by_name(db_path, args.project)
+        if project is None:
+            print(f"error: project '{args.project}' not found", file=sys.stderr)
+            return EXIT_NOT_FOUND
+        items = storage.list_worktrees_for_project(db_path, project.id)
+    else:
+        items = storage.list_worktrees(db_path)
+    if not items:
+        print("No worktrees.")
+        return EXIT_OK
+    print(f"{'ID':>4}  {'NAME':<20}  {'BRANCH':<24}  {'STATUS':<9}  PATH")
+    for wt in items:
+        print(f"{wt.id:>4}  {wt.name:<20}  {_shorten(wt.branch, 24):<24}  {wt.status:<9}  {wt.path}")
+    return EXIT_OK
+
+
+def cmd_worktree_show(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    wt = storage.get_worktree_by_name(db_path, args.name)
+    if wt is None:
+        print(f"error: worktree '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    project = storage.get_project_by_id(db_path, wt.project_id)
+    detail = [
+        f"Worktree '{wt.name}' (id {wt.id})",
+        f"  project    : {project.name if project else wt.project_id}",
+        f"  branch     : {wt.branch}",
+        f"  base_branch: {wt.base_branch}",
+        f"  path       : {wt.path}",
+        f"  status     : {wt.status}",
+        f"  created_at : {wt.created_at}",
+        f"  updated_at : {wt.updated_at}",
+    ]
+    print("\n".join(detail))
+    return EXIT_OK
+
+
+def cmd_worktree_archive(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    wt = storage.get_worktree_by_name(db_path, args.name)
+    if wt is None:
+        print(f"error: worktree '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    storage.update_worktree_status(db_path, wt.id, worktrees.WORKTREE_ARCHIVED)
+    print(f"Archived worktree '{wt.name}'. Files on disk were not removed.")
+    return EXIT_OK
+
+
+def cmd_worktree_remove(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    wt = storage.get_worktree_by_name(db_path, args.name)
+    if wt is None:
+        print(f"error: worktree '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    if not args.force and storage.count_active_runs_for_workspace(db_path, wt.path) > 0:
+        print(f"error: worktree '{wt.name}' has an active run; pass --force to remove anyway", file=sys.stderr)
+        return EXIT_USAGE
+    project = storage.get_project_by_id(db_path, wt.project_id)
+    if project is None or not project.repo_path:
+        print(f"error: cannot resolve the repository for worktree '{wt.name}'", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        worktrees.remove_git_worktree(project.repo_path, wt.path, force=args.force)
+    except worktrees.WorktreeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUN_FAILED
+    storage.delete_worktree_record(db_path, wt.id)
+    print(f"Removed worktree '{wt.name}' (git worktree remove). Run records were kept.")
+    return EXIT_OK
+
+
+def _dispatch_worktree(args: argparse.Namespace) -> int:
+    handlers = {
+        "create": cmd_worktree_create,
+        "list": cmd_worktree_list,
+        "show": cmd_worktree_show,
+        "archive": cmd_worktree_archive,
+        "remove": cmd_worktree_remove,
+    }
+    handler = handlers.get(getattr(args, "worktree_command", None))
+    if handler is None:
+        print(
+            "error: worktree requires a subcommand: create, list, show, archive, remove",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -528,6 +696,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             template=args.template,
             goal=args.goal,
             extra_context=args.extra_context,
+            worktree=args.worktree,
         )
     except RunInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -766,6 +935,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_project(args)
     if args.command == "template":
         return _dispatch_template(args)
+    if args.command == "worktree":
+        return _dispatch_worktree(args)
     if args.command == "run":
         return cmd_run(args)
     if args.command == "approve-next":

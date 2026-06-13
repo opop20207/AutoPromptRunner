@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, config, safety, storage, templates
+from .. import artifacts, config, safety, storage, templates, worktrees
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
 from ..projects import ResolvedRunSettings, resolve_run_settings
@@ -96,6 +96,7 @@ def resolve_run_inputs(
     template: Optional[str] = None,
     goal: Optional[str] = None,
     extra_context: Optional[str] = None,
+    worktree: Optional[str] = None,
 ) -> Tuple[str, ResolvedRunSettings]:
     """Resolve and validate run inputs, shared by the CLI and the HTTP API.
 
@@ -118,12 +119,26 @@ def resolve_run_inputs(
             raise RunInputError("not_found", f"project '{project}' not found")
     else:
         selected = storage.get_default_project(db_path)
+
+    # Workspace precedence: explicit --workspace > --worktree path > project repo_path.
+    # A named worktree is always validated (missing -> not_found, archived -> invalid).
+    worktree_name = (worktree or "").strip()
+    worktree_path: Optional[str] = None
+    if worktree_name:
+        wt = storage.get_worktree_by_name(db_path, worktree_name)
+        if wt is None:
+            raise RunInputError("not_found", f"worktree '{worktree_name}' not found")
+        if wt.status == worktrees.WORKTREE_ARCHIVED:
+            raise RunInputError("invalid", f"worktree '{worktree_name}' is archived")
+        worktree_path = wt.path
+    effective_workspace = workspace if workspace else worktree_path
+
     settings = resolve_run_settings(
         selected,
         provider=provider,
         max_loops=max_loops,
         timeout_seconds=timeout_seconds,
-        workspace=workspace,
+        workspace=effective_workspace,
         no_approval=no_approval,
     )
     if template_name:

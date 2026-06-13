@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from .approvals import ApprovalStatus
-from .models import Approval, Artifact, Project, StoredRun, StoredStep, Template
+from .models import Approval, Artifact, Project, StoredRun, StoredStep, Template, Worktree
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
 # Default database location, relative to the current working directory.
@@ -108,6 +108,21 @@ CREATE TABLE IF NOT EXISTS templates (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_name ON templates (name);
+
+CREATE TABLE IF NOT EXISTS worktrees (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    path TEXT NOT NULL,
+    base_branch TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects (id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_worktrees_name ON worktrees (name);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -775,6 +790,125 @@ def delete_template(db_path: str, template_id: int) -> None:
         conn.close()
 
 
+# -- worktree profiles -------------------------------------------------------
+
+
+def create_worktree_record(
+    db_path: str,
+    project_id: int,
+    name: str,
+    branch: str,
+    path: str,
+    base_branch: Optional[str],
+    status: str,
+) -> int:
+    """Insert a worktree profile and return its id. Raises on a duplicate name.
+
+    This only records the worktree; the directory on disk is created/removed solely via
+    ``git worktree`` commands in :mod:`autoprompt_runner.worktrees`.
+    """
+    db = _resolve_db_path(db_path)
+    now = _utcnow_iso()
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "INSERT INTO worktrees (project_id, name, branch, path, base_branch, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (int(project_id), name, branch, path, base_branch, status, now, now),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_worktrees(db_path: str) -> List[Worktree]:
+    """Return all worktree profiles ordered by name."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM worktrees ORDER BY name ASC").fetchall()
+        return [_row_to_worktree(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_worktrees_for_project(db_path: str, project_id: int) -> List[Worktree]:
+    """Return worktree profiles for ``project_id`` ordered by name."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM worktrees WHERE project_id = ? ORDER BY name ASC", (int(project_id),)
+        ).fetchall()
+        return [_row_to_worktree(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_worktree_by_id(db_path: str, worktree_id: int) -> Optional[Worktree]:
+    """Return the worktree with ``worktree_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM worktrees WHERE id = ?", (worktree_id,)).fetchone()
+        return _row_to_worktree(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_worktree_by_name(db_path: str, name: str) -> Optional[Worktree]:
+    """Return the worktree named ``name`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM worktrees WHERE name = ?", (name,)).fetchone()
+        return _row_to_worktree(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def update_worktree_status(db_path: str, worktree_id: int, status: str) -> None:
+    """Update a worktree's status and bump ``updated_at``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE worktrees SET status = ?, updated_at = ? WHERE id = ?",
+            (status, _utcnow_iso(), worktree_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_worktree_record(db_path: str, worktree_id: int) -> None:
+    """Delete a worktree profile row. No files on disk are touched here."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute("DELETE FROM worktrees WHERE id = ?", (worktree_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def count_active_runs_for_workspace(db_path: str, workspace: Optional[str]) -> int:
+    """Return how many non-terminal runs (RUNNING / WAITING_APPROVAL) target ``workspace``."""
+    if not workspace:
+        return 0
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM runs WHERE workspace = ? AND status IN (?, ?)",
+            (workspace, RunStatus.RUNNING.value, RunStatus.WAITING_APPROVAL.value),
+        ).fetchone()
+        return int(row["c"]) if row is not None else 0
+    finally:
+        conn.close()
+
+
 # -- run logs (for polling) --------------------------------------------------
 
 _LOG_TAIL_LIMIT = 4000
@@ -926,4 +1060,18 @@ def _row_to_template(row: sqlite3.Row) -> Template:
         tags=_tags_from_text(_opt(row, "tags")),
         created_at=row["created_at"],
         updated_at=_opt(row, "updated_at"),
+    )
+
+
+def _row_to_worktree(row: sqlite3.Row) -> Worktree:
+    return Worktree(
+        id=row["id"],
+        project_id=row["project_id"],
+        name=row["name"],
+        branch=row["branch"],
+        path=row["path"],
+        base_branch=_opt(row, "base_branch"),
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

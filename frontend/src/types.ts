@@ -73,6 +73,7 @@ export interface RunCreate {
   template?: string | null;
   goal?: string | null;
   extra_context?: string | null;
+  worktree?: string | null;
   project?: string | null;
   provider?: string | null;
   workspace?: string | null;
@@ -115,6 +116,28 @@ export const TEMPLATE_PLACEHOLDERS = [
   "last_error",
   "extra_context",
 ] as const;
+
+export type WorktreeStatus = "ACTIVE" | "LOCKED" | "ARCHIVED";
+
+export interface Worktree {
+  id: number;
+  project_id: number;
+  project?: string | null;
+  name: string;
+  branch: string;
+  path: string;
+  base_branch?: string | null;
+  status: WorktreeStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorktreeCreate {
+  project: string;
+  name: string;
+  branch: string;
+  base_branch?: string | null;
+}
 
 export interface Step {
   id: number;

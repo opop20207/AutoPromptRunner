@@ -1,22 +1,34 @@
 import { type FormEvent, useEffect, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
-import { MAX_LOOPS_HARD_LIMIT, PROVIDERS, TIMEOUT_SECONDS_HARD_LIMIT, type Template } from "../types";
+import {
+  MAX_LOOPS_HARD_LIMIT,
+  PROVIDERS,
+  TIMEOUT_SECONDS_HARD_LIMIT,
+  type Template,
+  type Worktree,
+} from "../types";
 import { Section } from "./Layout";
 
 export function RunForm({
   project,
   template,
+  worktree,
   templateRefresh,
+  worktreeRefresh,
   onProjectChange,
   onTemplateChange,
+  onWorktreeChange,
   onCreated,
 }: {
   project: string;
   template: string;
+  worktree: string;
   templateRefresh: number;
+  worktreeRefresh: number;
   onProjectChange: (name: string) => void;
   onTemplateChange: (name: string) => void;
+  onWorktreeChange: (name: string) => void;
   onCreated: (runId: number) => void;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -29,11 +41,15 @@ export function RunForm({
   const [timeoutSeconds, setTimeoutSeconds] = useState("");
   const [showNextPrompt, setShowNextPrompt] = useState(false);
   const [templates, setTemplates] = useState<Template[]>([]);
+  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const usingTemplate = template.trim() !== "";
+  const selectedWorktree = worktrees.find((w) => w.name === worktree) ?? null;
+  // Resolved workspace precedence: explicit workspace > worktree path > project repo_path.
+  const resolvedWorkspace = workspace.trim() || selectedWorktree?.path || "(project default)";
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +66,21 @@ export function RunForm({
     };
   }, [templateRefresh]);
 
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listWorktrees()
+      .then((items) => {
+        if (!cancelled) setWorktrees(items);
+      })
+      .catch(() => {
+        /* the worktree selector is optional; ignore load errors here */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [worktreeRefresh]);
+
   // Drop a stale preview whenever an input that feeds it changes.
   useEffect(() => {
     setPreview(null);
@@ -61,7 +92,7 @@ export function RunForm({
     try {
       const result = await api.renderTemplate(template, {
         project_name: project.trim() || null,
-        workspace: workspace.trim() || null,
+        workspace: workspace.trim() || selectedWorktree?.path || null,
         goal: goal.trim() || null,
         extra_context: extraContext.trim() || null,
       });
@@ -81,6 +112,7 @@ export function RunForm({
         template: usingTemplate ? template : null,
         goal: goal.trim() || null,
         extra_context: extraContext.trim() || null,
+        worktree: worktree.trim() || null,
         project: project.trim() || null,
         provider: provider || null,
         workspace: workspace.trim() || null,
@@ -142,6 +174,22 @@ export function RunForm({
           <input value={project} onChange={(e) => onProjectChange(e.target.value)} />
         </label>
         <label>
+          Worktree (optional; runs in the worktree's isolated path)
+          <select value={worktree} onChange={(e) => onWorktreeChange(e.target.value)}>
+            <option value="">(no worktree)</option>
+            {worktrees.map((w) => (
+              <option key={w.id} value={w.name}>
+                {w.name} {w.status !== "ACTIVE" ? `(${w.status})` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {worktree.trim() !== "" && (
+          <p className="muted">
+            Resolved workspace: <span className="mono">{resolvedWorkspace}</span>
+          </p>
+        )}
+        <label>
           Provider override
           <select value={provider} onChange={(e) => setProvider(e.target.value)}>
             <option value="">(use project / default)</option>
@@ -153,7 +201,7 @@ export function RunForm({
           </select>
         </label>
         <label>
-          Workspace override (required for claude-code / codex unless from a project)
+          Workspace override (highest precedence; required for claude-code / codex unless from a project)
           <input value={workspace} onChange={(e) => setWorkspace(e.target.value)} />
         </label>
         <label>

@@ -39,6 +39,7 @@ class RunCreateRequest(BaseModel):
     template: Optional[str] = None
     goal: Optional[str] = None
     extra_context: Optional[str] = None
+    worktree: Optional[str] = None
     project: Optional[str] = None
     provider: Optional[str] = None
     workspace: Optional[str] = None
@@ -154,3 +155,23 @@ class TemplateSeedResponse(BaseModel):
     seeded: int
     skipped: int
     total: int
+
+
+class WorktreeCreateRequest(BaseModel):
+    project: str
+    name: str
+    branch: str
+    base_branch: Optional[str] = None
+
+
+class WorktreeResponse(BaseModel):
+    id: int
+    project_id: int
+    project: Optional[str] = None
+    name: str
+    branch: str
+    path: str
+    base_branch: Optional[str] = None
+    status: str
+    created_at: str
+    updated_at: str
