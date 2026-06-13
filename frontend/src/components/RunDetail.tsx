@@ -3,12 +3,12 @@ import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api/client";
 import type { RunDetail as RunDetailData } from "../types";
 import { ApprovalPanel } from "./ApprovalPanel";
+import { ArtifactList } from "./ArtifactList";
+import { ArtifactViewer } from "./ArtifactViewer";
+import { ChangedFilesPanel } from "./ChangedFilesPanel";
+import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
-
-function latestChangedFiles(detail: RunDetailData): string {
-  const items = detail.artifacts.filter((a) => a.type === "changed_files" && a.preview.trim());
-  return items.length > 0 ? items[items.length - 1].preview : "";
-}
+import { StepList } from "./StepList";
 
 export function RunDetail({
   runId,
@@ -22,6 +22,8 @@ export function RunDetail({
   const [detail, setDetail] = useState<RunDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [artifactRefresh, setArtifactRefresh] = useState(0);
+  const [selectedArtifact, setSelectedArtifact] = useState<number | null>(null);
 
   async function load() {
     if (runId === null) {
@@ -32,6 +34,7 @@ export function RunDetail({
     setError(null);
     try {
       setDetail(await api.getRun(runId));
+      setArtifactRefresh((n) => n + 1); // reload the artifact list when the run reloads
     } catch (err) {
       setError(errorMessage(err));
       setDetail(null);
@@ -41,10 +44,9 @@ export function RunDetail({
   }
 
   useEffect(() => {
+    setSelectedArtifact(null);
     void load();
   }, [runId, refreshKey]);
-
-  const changed = detail ? latestChangedFiles(detail) : "";
 
   return (
     <Section
@@ -57,54 +59,76 @@ export function RunDetail({
         ) : undefined
       }
     >
-      {runId === null && <p className="muted">Select a run to see its detail.</p>}
+      {runId === null && <p className="muted">Select a run to inspect its steps and artifacts.</p>}
       {loading && <p className="muted">Loading…</p>}
       {error && <p className="error">{error}</p>}
       {detail && !error && (
-        <>
-          <dl className="kv">
-            <dt>Run</dt>
-            <dd>#{detail.id}</dd>
-            <dt>Status</dt>
-            <dd className="status">{detail.status}</dd>
-            <dt>Provider</dt>
-            <dd>{detail.provider}</dd>
-            <dt>Workspace</dt>
-            <dd className="mono">{detail.workspace ?? "(none)"}</dd>
-            <dt>Root prompt</dt>
-            <dd>{detail.prompt}</dd>
-            <dt>Max loops</dt>
-            <dd>{detail.max_loops}</dd>
-          </dl>
+        <div className="detail">
+          <div className="subsection">
+            <h3>Summary</h3>
+            <dl className="kv">
+              <dt>Run</dt>
+              <dd>#{detail.id}</dd>
+              <dt>Status</dt>
+              <dd className="status">{detail.status}</dd>
+              <dt>Provider</dt>
+              <dd>{detail.provider}</dd>
+              <dt>Workspace</dt>
+              <dd className="mono">{detail.workspace ?? "(none)"}</dd>
+              <dt>Root prompt</dt>
+              <dd>{detail.prompt}</dd>
+              <dt>Max loops</dt>
+              <dd>{detail.max_loops}</dd>
+              <dt>Created</dt>
+              <dd className="mono">{detail.created_at}</dd>
+              <dt>Finished</dt>
+              <dd className="mono">{detail.finished_at ?? "(none)"}</dd>
+            </dl>
+          </div>
 
-          {changed && (
-            <>
-              <p className="muted">Changed files</p>
-              <pre className="block">{changed}</pre>
-            </>
-          )}
+          <div className="subsection">
+            <h3>Steps ({detail.steps.length})</h3>
+            <StepList steps={detail.steps} />
+          </div>
 
-          <p className="muted">
-            <strong>Steps ({detail.steps.length})</strong>
-          </p>
-          {detail.steps.length === 0 && <p className="muted">No steps yet.</p>}
-          {detail.steps.map((step) => (
-            <div className="step" key={step.id}>
-              <div className="step-head">
-                <span>step #{step.loop_index}</span>
-                <span className="status">{step.status}</span>
-                <span className="muted">exit {step.exit_code ?? "-"}</span>
-              </div>
-              {step.stdout && <pre className="block">{step.stdout}</pre>}
-              {step.stderr && <pre className="block">{step.stderr}</pre>}
-              {step.next_prompt && <p className="muted">next prompt: {step.next_prompt}</p>}
+          <div className="detail-grid">
+            <div className="subsection">
+              <h3>Changed files</h3>
+              <ChangedFilesPanel artifacts={detail.artifacts} />
             </div>
-          ))}
+            <div className="subsection">
+              <h3>Diff stat</h3>
+              <DiffStatPanel artifacts={detail.artifacts} />
+            </div>
+          </div>
+
+          <div className="detail-grid">
+            <div className="subsection">
+              <h3>Artifacts</h3>
+              <ArtifactList
+                runId={detail.id}
+                refreshKey={artifactRefresh}
+                selectedId={selectedArtifact}
+                onSelect={setSelectedArtifact}
+              />
+            </div>
+            <div className="subsection">
+              <h3>Artifact viewer</h3>
+              <ArtifactViewer artifactId={selectedArtifact} />
+            </div>
+          </div>
 
           {detail.pending_approval && (
-            <ApprovalPanel runId={detail.id} approval={detail.pending_approval} onResolved={onChanged} />
+            <div className="subsection">
+              <h3>Approval</h3>
+              <ApprovalPanel
+                runId={detail.id}
+                approval={detail.pending_approval}
+                onResolved={onChanged}
+              />
+            </div>
           )}
-        </>
+        </div>
       )}
     </Section>
   );

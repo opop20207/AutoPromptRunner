@@ -2,6 +2,27 @@
 
 export const PROVIDERS = ["mock", "claude-code", "codex"] as const;
 
+export type RunStatus =
+  | "CREATED"
+  | "RUNNING"
+  | "WAITING_APPROVAL"
+  | "DONE"
+  | "FAILED"
+  | "STOPPED";
+
+// Artifact type options for the ArtifactList filter ("all" means no filter).
+export const ARTIFACT_TYPES = [
+  "all",
+  "git_status_before",
+  "git_status_after",
+  "git_diff",
+  "git_diff_stat",
+  "changed_files",
+  "runner_stdout",
+  "runner_stderr",
+] as const;
+export type ArtifactTypeFilter = (typeof ARTIFACT_TYPES)[number];
+
 export interface Health {
   status: string;
   service: string;
@@ -31,7 +52,7 @@ export interface ProjectCreate {
 
 export interface RunSummary {
   id: number;
-  status: string;
+  status: RunStatus;
   provider: string;
   created_at: string;
   prompt: string;
@@ -85,9 +106,19 @@ export interface ArtifactSummary {
   preview: string;
 }
 
+export interface ArtifactDetail {
+  id: number;
+  run_id: number;
+  step_id: number | null;
+  type: string;
+  content: string | null;
+  path: string | null;
+  created_at: string;
+}
+
 export interface RunDetail {
   id: number;
-  status: string;
+  status: RunStatus;
   provider: string;
   workspace: string | null;
   prompt: string;

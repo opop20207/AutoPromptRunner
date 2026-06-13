@@ -276,3 +276,109 @@ pre.block {
   display: flex;
   gap: 8px;
 }
+
+/* -- run detail artifact review -- */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.subsection h3 {
+  font-size: 13px;
+  margin: 0 0 6px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 760px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kv.compact {
+  grid-template-columns: 70px 1fr;
+}
+
+.step-times {
+  font-size: 12px;
+  margin: 2px 0 6px;
+}
+
+.filelist {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.filelist li {
+  word-break: break-all;
+}
+
+.artifact-filter {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.artifact-filter label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.artifact-filter select {
+  font: inherit;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.artifact-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+pre.block.large {
+  max-height: 360px;
+}
+
+.scroll {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.table tr.selected {
+  background: #e4ecfb;
+}
+
+.approval-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.checkbox.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}

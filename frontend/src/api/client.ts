@@ -4,6 +4,8 @@
 // time with the VITE_API_BASE_URL environment variable.
 
 import type {
+  ArtifactDetail,
+  ArtifactSummary,
   Health,
   Project,
   ProjectCreate,
@@ -67,6 +69,11 @@ export const api = {
   createRun: (body: RunCreate) =>
     request<RunSummary>("/runs", { method: "POST", body: JSON.stringify(body) }),
   getRun: (id: number) => request<RunDetail>(`/runs/${id}`),
+  getRunArtifacts: (runId: number, type?: string) => {
+    const query = type && type !== "all" ? `?type=${encodeURIComponent(type)}` : "";
+    return request<ArtifactSummary[]>(`/runs/${runId}/artifacts${query}`);
+  },
+  getArtifact: (artifactId: number) => request<ArtifactDetail>(`/artifacts/${artifactId}`),
   approveNext: (id: number) =>
     request<RunSummary>(`/runs/${id}/approve-next`, { method: "POST" }),
   rejectNext: (id: number) =>

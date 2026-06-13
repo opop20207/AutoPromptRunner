@@ -268,6 +268,27 @@ Example local workflow:
 5. Open the run in **Runs**, review its steps, and **Approve** or **Reject** the pending
    next prompt.
 
+### Run detail and artifact review
+
+Selecting a run opens a dense detail view: a summary, the **Steps** list (status, exit
+code, timestamps, and stdout/stderr previews), **Changed files** and **Diff stat**
+panels, an **Artifacts** browser, and an **Artifact viewer**.
+
+- **Artifacts** lists every captured artifact (`git_status_before` / `git_status_after`,
+  `git_diff`, `git_diff_stat`, `changed_files`, `runner_stdout`, `runner_stderr`) with a
+  type filter.
+- **Artifact viewer** shows the selected artifact's full content in a scrollable,
+  monospace, whitespace-preserving block with a copy-to-clipboard button (it does not
+  crash on large content).
+
+Diff review workflow: open a run, read **Changed files** and **Diff stat** for a quick
+overview, then select the `git_diff` artifact to read the full diff in the viewer.
+
+Approval workflow: when a run is `WAITING_APPROVAL`, the **Approval** panel shows the
+pending next prompt (toggle **Show full next prompt** for the untruncated text).
+**Approve** runs the next step and **Reject** stops the run; either action reloads the
+run detail, the run list, and the artifacts. Live log streaming is not implemented yet.
+
 ## Runner Providers
 
 | Provider | Class | Status | Description |
