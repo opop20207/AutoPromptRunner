@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .. import __version__
-from .routes import health, projects, runs
+from .routes import health, projects, runs, templates
 
 app = FastAPI(
     title="AutoPromptRunner API",
@@ -36,3 +36,4 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(projects.router)
 app.include_router(runs.router)
+app.include_router(templates.router)

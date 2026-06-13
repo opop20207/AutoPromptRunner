@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from .approvals import ApprovalStatus
-from .models import Approval, Artifact, Project, StoredRun, StoredStep
+from .models import Approval, Artifact, Project, StoredRun, StoredStep, Template
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
 # Default database location, relative to the current working directory.
@@ -96,6 +96,18 @@ CREATE TABLE IF NOT EXISTS artifacts (
     FOREIGN KEY (run_id) REFERENCES runs (id),
     FOREIGN KEY (step_id) REFERENCES steps (id)
 );
+
+CREATE TABLE IF NOT EXISTS templates (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    body TEXT NOT NULL,
+    tags TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_name ON templates (name);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -643,6 +655,126 @@ def get_artifact(db_path: str, artifact_id: int) -> Optional[Artifact]:
         conn.close()
 
 
+# -- prompt templates --------------------------------------------------------
+
+
+def _tags_to_text(tags: Optional[List[str]]) -> str:
+    """Serialize a list of tags to a single comma-separated column value."""
+    if not tags:
+        return ""
+    return ",".join(tag.strip() for tag in tags if tag and tag.strip())
+
+
+def _tags_from_text(raw: Optional[str]) -> List[str]:
+    """Parse a stored tags column back into a list of non-empty labels."""
+    if not raw:
+        return []
+    return [tag.strip() for tag in raw.split(",") if tag.strip()]
+
+
+def create_template(
+    db_path: str,
+    name: str,
+    body: str,
+    description: str = "",
+    tags: Optional[List[str]] = None,
+) -> int:
+    """Insert a prompt template and return its id. Raises on a duplicate name."""
+    path = _resolve_db_path(db_path)
+    now = _utcnow_iso()
+    conn = _connect(path)
+    try:
+        cur = conn.execute(
+            "INSERT INTO templates (name, description, body, tags, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name, description or "", body, _tags_to_text(tags), now, now),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_templates(db_path: str) -> List[Template]:
+    """Return all prompt templates ordered by name."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute("SELECT * FROM templates ORDER BY name ASC").fetchall()
+        return [_row_to_template(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_template_by_id(db_path: str, template_id: int) -> Optional[Template]:
+    """Return the template with ``template_id`` or ``None``."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,)).fetchone()
+        return _row_to_template(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_template_by_name(db_path: str, name: str) -> Optional[Template]:
+    """Return the template named ``name`` or ``None``."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT * FROM templates WHERE name = ?", (name,)).fetchone()
+        return _row_to_template(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def update_template(
+    db_path: str,
+    template_id: int,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    body: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+) -> None:
+    """Update the provided (non-``None``) fields of a template and bump ``updated_at``."""
+    assignments: List[str] = []
+    values: List[object] = []
+    if name is not None:
+        assignments.append("name = ?")
+        values.append(name)
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description)
+    if body is not None:
+        assignments.append("body = ?")
+        values.append(body)
+    if tags is not None:
+        assignments.append("tags = ?")
+        values.append(_tags_to_text(tags))
+    assignments.append("updated_at = ?")
+    values.append(_utcnow_iso())
+    values.append(template_id)
+
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        conn.execute(f"UPDATE templates SET {', '.join(assignments)} WHERE id = ?", values)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_template(db_path: str, template_id: int) -> None:
+    """Delete a prompt template. Runs and other rows are not affected."""
+    path = _resolve_db_path(db_path)
+    conn = _connect(path)
+    try:
+        conn.execute("DELETE FROM templates WHERE id = ?", (template_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # -- run logs (for polling) --------------------------------------------------
 
 _LOG_TAIL_LIMIT = 4000
@@ -782,4 +914,16 @@ def _row_to_artifact(row: sqlite3.Row) -> Artifact:
         content=row["content"],
         path=row["path"],
         created_at=row["created_at"],
+    )
+
+
+def _row_to_template(row: sqlite3.Row) -> Template:
+    return Template(
+        id=row["id"],
+        name=row["name"],
+        description=row["description"] or "",
+        body=row["body"],
+        tags=_tags_from_text(_opt(row, "tags")),
+        created_at=row["created_at"],
+        updated_at=_opt(row, "updated_at"),
     )

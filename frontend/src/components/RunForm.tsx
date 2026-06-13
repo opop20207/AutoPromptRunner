@@ -1,27 +1,75 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
-import { MAX_LOOPS_HARD_LIMIT, PROVIDERS, TIMEOUT_SECONDS_HARD_LIMIT } from "../types";
+import { MAX_LOOPS_HARD_LIMIT, PROVIDERS, TIMEOUT_SECONDS_HARD_LIMIT, type Template } from "../types";
 import { Section } from "./Layout";
 
 export function RunForm({
   project,
+  template,
+  templateRefresh,
   onProjectChange,
+  onTemplateChange,
   onCreated,
 }: {
   project: string;
+  template: string;
+  templateRefresh: number;
   onProjectChange: (name: string) => void;
+  onTemplateChange: (name: string) => void;
   onCreated: (runId: number) => void;
 }) {
   const [prompt, setPrompt] = useState("");
+  const [goal, setGoal] = useState("");
+  const [extraContext, setExtraContext] = useState("");
   const [provider, setProvider] = useState<string>(""); // empty -> use project/default
   const [workspace, setWorkspace] = useState("");
   const [maxLoops, setMaxLoops] = useState("");
   const [requireApproval, setRequireApproval] = useState(true);
   const [timeoutSeconds, setTimeoutSeconds] = useState("");
   const [showNextPrompt, setShowNextPrompt] = useState(false);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const usingTemplate = template.trim() !== "";
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listTemplates()
+      .then((items) => {
+        if (!cancelled) setTemplates(items);
+      })
+      .catch(() => {
+        /* the template selector is optional; ignore load errors here */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [templateRefresh]);
+
+  // Drop a stale preview whenever an input that feeds it changes.
+  useEffect(() => {
+    setPreview(null);
+  }, [template, goal, extraContext, project, workspace]);
+
+  async function previewTemplate() {
+    if (!usingTemplate) return;
+    setError(null);
+    try {
+      const result = await api.renderTemplate(template, {
+        project_name: project.trim() || null,
+        workspace: workspace.trim() || null,
+        goal: goal.trim() || null,
+        extra_context: extraContext.trim() || null,
+      });
+      setPreview(result.rendered);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -29,7 +77,10 @@ export function RunForm({
     setError(null);
     try {
       const created = await api.createRun({
-        prompt,
+        prompt: usingTemplate ? null : prompt,
+        template: usingTemplate ? template : null,
+        goal: goal.trim() || null,
+        extra_context: extraContext.trim() || null,
         project: project.trim() || null,
         provider: provider || null,
         workspace: workspace.trim() || null,
@@ -51,9 +102,41 @@ export function RunForm({
     <Section title="New Run">
       <form className="form" onSubmit={submit}>
         <label>
-          Prompt
-          <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} required />
+          Template (optional; overrides the direct prompt)
+          <select value={template} onChange={(e) => onTemplateChange(e.target.value)}>
+            <option value="">(direct prompt — no template)</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.name}>
+                {t.name}
+              </option>
+            ))}
+          </select>
         </label>
+        <label>
+          Prompt {usingTemplate ? "(disabled while a template is selected)" : ""}
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            required={!usingTemplate}
+            disabled={usingTemplate}
+          />
+        </label>
+        <label>
+          Goal (fills {"{{goal}}"} in the template)
+          <input value={goal} onChange={(e) => setGoal(e.target.value)} />
+        </label>
+        <label>
+          Extra context (fills {"{{extra_context}}"})
+          <input value={extraContext} onChange={(e) => setExtraContext(e.target.value)} />
+        </label>
+        {usingTemplate && (
+          <div className="row-actions">
+            <button type="button" onClick={() => void previewTemplate()}>
+              Preview rendered prompt
+            </button>
+          </div>
+        )}
+        {usingTemplate && preview !== null && <pre className="block">{preview || "(empty)"}</pre>}
         <label>
           Project (optional; blank uses the default project)
           <input value={project} onChange={(e) => onProjectChange(e.target.value)} />

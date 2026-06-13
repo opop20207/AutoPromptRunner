@@ -69,7 +69,10 @@ export interface RunSummary {
 }
 
 export interface RunCreate {
-  prompt: string;
+  prompt?: string | null;
+  template?: string | null;
+  goal?: string | null;
+  extra_context?: string | null;
   project?: string | null;
   provider?: string | null;
   workspace?: string | null;
@@ -78,6 +81,40 @@ export interface RunCreate {
   timeout_seconds?: number | null;
   show_next_prompt: boolean;
 }
+
+export interface Template {
+  id: number;
+  name: string;
+  description?: string | null;
+  body: string;
+  tags: string[];
+  created_at: string;
+  updated_at?: string | null;
+}
+
+export interface TemplateCreate {
+  name: string;
+  body: string;
+  description?: string;
+  tags?: string[];
+}
+
+export interface TemplateRender {
+  project_name?: string | null;
+  workspace?: string | null;
+  goal?: string | null;
+  extra_context?: string | null;
+}
+
+// The placeholders a template body may reference (mirrors templates.SUPPORTED_PLACEHOLDERS).
+export const TEMPLATE_PLACEHOLDERS = [
+  "project_name",
+  "workspace",
+  "goal",
+  "changed_files",
+  "last_error",
+  "extra_context",
+] as const;
 
 export interface Step {
   id: number;

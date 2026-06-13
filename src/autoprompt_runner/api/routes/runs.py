@@ -122,6 +122,9 @@ def create_run(body: RunCreateRequest, db_path: str = Depends(get_db_path)) -> R
             max_loops=body.max_loops,
             timeout_seconds=body.timeout_seconds,
             no_approval=not body.require_approval,
+            template=body.template,
+            goal=body.goal,
+            extra_context=body.extra_context,
         )
     except RunInputError as exc:
         raise HTTPException(status_code=404 if exc.kind == "not_found" else 400, detail=str(exc))

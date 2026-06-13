@@ -13,6 +13,9 @@ import type {
   RunDetail,
   RunLogs,
   RunSummary,
+  Template,
+  TemplateCreate,
+  TemplateRender,
 } from "../types";
 
 const BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -80,6 +83,19 @@ export const api = {
     request<RunSummary>(`/runs/${id}/approve-next`, { method: "POST" }),
   rejectNext: (id: number) =>
     request<RunSummary>(`/runs/${id}/reject-next`, { method: "POST" }),
+  listTemplates: () => request<Template[]>("/templates"),
+  createTemplate: (body: TemplateCreate) =>
+    request<Template>("/templates", { method: "POST", body: JSON.stringify(body) }),
+  getTemplate: (name: string) => request<Template>(`/templates/${encodeURIComponent(name)}`),
+  deleteTemplate: (name: string) =>
+    request<unknown>(`/templates/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  seedTemplates: () =>
+    request<{ seeded: number; skipped: number; total: number }>("/templates/seed", { method: "POST" }),
+  renderTemplate: (name: string, body: TemplateRender) =>
+    request<{ name: string; rendered: string }>(`/templates/${encodeURIComponent(name)}/render`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export function errorMessage(err: unknown): string {

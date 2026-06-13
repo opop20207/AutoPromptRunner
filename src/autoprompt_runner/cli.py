@@ -5,6 +5,8 @@ CLI-first entry point (see PROJECT.md). Commands:
 * ``version``        -- print the package version.
 * ``init-db``        -- create the local SQLite database.
 * ``project``        -- manage project profiles (add / list / show / set-default / delete).
+* ``template``       -- manage reusable prompt templates (seed / list / show / add /
+  delete / render).
 * ``run``            -- start a run; execute the first step, generate the next prompt,
   and pause at a pending approval (default) or auto-run up to ``--max-loops``.
 * ``approve-next``   -- approve a run's pending next prompt and execute it.
@@ -27,7 +29,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, safety, storage
+from . import __version__, safety, storage, templates
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -78,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     safety_parser.add_argument("--workspace", default=None, help="Workspace directory to validate (optional).")
 
     _add_project_commands(subparsers)
+    _add_template_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -86,7 +89,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--project", default=None,
         help="Use settings from this project profile (defaults to the default project).",
     )
-    run_parser.add_argument("--prompt", required=True, help="Prompt to send. Must not be empty.")
+    run_parser.add_argument(
+        "--prompt", default=None,
+        help="Prompt to send. Provide this or --template (not both).",
+    )
+    run_parser.add_argument(
+        "--template", default=None,
+        help="Render this template's body as the prompt (mutually exclusive with --prompt).",
+    )
+    run_parser.add_argument(
+        "--goal", default=None, help="Value for the {{goal}} placeholder when using --template.",
+    )
+    run_parser.add_argument(
+        "--extra-context", dest="extra_context", default=None,
+        help="Value for the {{extra_context}} placeholder when using --template.",
+    )
     run_parser.add_argument(
         "--provider", default=None,
         help="Provider: mock or claude-code. Overrides the project default.",
@@ -183,6 +200,46 @@ def _add_project_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     delete_parser.add_argument("--name", required=True, help="Project name.")
     _add_db_path(delete_parser)
+
+
+def _add_template_commands(subparsers: argparse._SubParsersAction) -> None:
+    template_parser = subparsers.add_parser("template", help="Manage reusable prompt templates.")
+    template_sub = template_parser.add_subparsers(dest="template_command", metavar="subcommand")
+
+    seed_parser = template_sub.add_parser("seed", help="Insert the built-in templates if missing.")
+    seed_parser.add_argument(
+        "--force", dest="force", action="store_true",
+        help="Overwrite existing built-in templates instead of skipping them.",
+    )
+    _add_db_path(seed_parser)
+
+    list_parser = template_sub.add_parser("list", help="List templates (id, name, tags, description).")
+    _add_db_path(list_parser)
+
+    show_parser = template_sub.add_parser("show", help="Print a template's full body.")
+    show_parser.add_argument("--name", required=True, help="Template name.")
+    _add_db_path(show_parser)
+
+    add_parser = template_sub.add_parser("add", help="Create a custom template.")
+    add_parser.add_argument("--name", required=True, help="Unique template name.")
+    add_parser.add_argument("--description", default="", help="Short description.")
+    add_parser.add_argument("--body", required=True, help="Template body (may contain {{placeholders}}).")
+    add_parser.add_argument("--tags", default="", help="Comma-separated tags (optional).")
+    _add_db_path(add_parser)
+
+    delete_parser = template_sub.add_parser("delete", help="Delete a template (runs are not affected).")
+    delete_parser.add_argument("--name", required=True, help="Template name.")
+    _add_db_path(delete_parser)
+
+    render_parser = template_sub.add_parser("render", help="Print a template rendered with the given values.")
+    render_parser.add_argument("--name", required=True, help="Template name.")
+    render_parser.add_argument("--project", default=None, help="Project name for {{project_name}}/{{workspace}}.")
+    render_parser.add_argument("--workspace", default=None, help="Override the {{workspace}} value.")
+    render_parser.add_argument("--goal", default=None, help="Value for {{goal}}.")
+    render_parser.add_argument(
+        "--extra-context", dest="extra_context", default=None, help="Value for {{extra_context}}."
+    )
+    _add_db_path(render_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -335,6 +392,125 @@ def cmd_project_delete(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# -- template commands -------------------------------------------------------
+
+
+def _parse_tags(raw: Optional[str]) -> list:
+    return [tag.strip() for tag in (raw or "").split(",") if tag.strip()]
+
+
+def cmd_template_seed(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    result = templates.seed_templates(db_path, overwrite=args.force)
+    verb = "Seeded/updated" if args.force else "Seeded"
+    print(f"{verb} {result['seeded']} template(s); skipped {result['skipped']} existing.")
+    return EXIT_OK
+
+
+def cmd_template_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    items = templates.list_templates(db_path)
+    if not items:
+        print("No templates. Run 'template seed' to add the built-in templates.")
+        return EXIT_OK
+    print(f"{'ID':>4}  {'NAME':<28}  {'TAGS':<22}  DESCRIPTION")
+    for tmpl in items:
+        tags = ", ".join(tmpl.tags)
+        print(f"{tmpl.id:>4}  {tmpl.name:<28}  {tags:<22}  {_shorten(tmpl.description, 50)}")
+    return EXIT_OK
+
+
+def cmd_template_show(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    tmpl = templates.get_template_by_name(db_path, args.name)
+    if tmpl is None:
+        print(f"error: template '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    print(f"Template '{tmpl.name}' (id {tmpl.id})")
+    print(f"  description: {tmpl.description}")
+    print(f"  tags       : {', '.join(tmpl.tags)}")
+    print(f"  created_at : {tmpl.created_at}")
+    print(f"  updated_at : {tmpl.updated_at}")
+    print("---")
+    print(tmpl.body)
+    return EXIT_OK
+
+
+def cmd_template_add(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    name = (args.name or "").strip()
+    body = args.body or ""
+    if not name:
+        print("error: --name must not be empty", file=sys.stderr)
+        return EXIT_USAGE
+    if not body.strip():
+        print("error: --body must not be empty", file=sys.stderr)
+        return EXIT_USAGE
+    if templates.get_template_by_name(db_path, name) is not None:
+        print(f"error: template '{name}' already exists", file=sys.stderr)
+        return EXIT_USAGE
+    template_id = templates.create_template(
+        db_path, name=name, body=body, description=args.description or "", tags=_parse_tags(args.tags)
+    )
+    print(f"Added template '{name}' (id {template_id}).")
+    return EXIT_OK
+
+
+def cmd_template_delete(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    tmpl = templates.get_template_by_name(db_path, args.name)
+    if tmpl is None:
+        print(f"error: template '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    templates.delete_template(db_path, tmpl.id)
+    print(f"Deleted template '{tmpl.name}'. Runs were not affected.")
+    return EXIT_OK
+
+
+def cmd_template_render(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    tmpl = templates.get_template_by_name(db_path, args.name)
+    if tmpl is None:
+        print(f"error: template '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    project_name = ""
+    workspace = args.workspace
+    if args.project:
+        project = storage.get_project_by_name(db_path, args.project)
+        if project is None:
+            print(f"error: project '{args.project}' not found", file=sys.stderr)
+            return EXIT_NOT_FOUND
+        project_name = project.name
+        workspace = workspace or project.repo_path
+    values = templates.build_render_values(
+        project_name=project_name,
+        workspace=workspace,
+        goal=args.goal,
+        extra_context=args.extra_context,
+    )
+    print(templates.render_template(tmpl.body, values))
+    return EXIT_OK
+
+
+def _dispatch_template(args: argparse.Namespace) -> int:
+    handlers = {
+        "seed": cmd_template_seed,
+        "list": cmd_template_list,
+        "show": cmd_template_show,
+        "add": cmd_template_add,
+        "delete": cmd_template_delete,
+        "render": cmd_template_render,
+    }
+    handler = handlers.get(getattr(args, "template_command", None))
+    if handler is None:
+        print(
+            "error: template requires a subcommand: seed, list, show, add, delete, render",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -349,6 +525,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             max_loops=args.max_loops,
             timeout_seconds=args.timeout_seconds,
             no_approval=args.no_approval,
+            template=args.template,
+            goal=args.goal,
+            extra_context=args.extra_context,
         )
     except RunInputError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -585,6 +764,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_safety_check(args)
     if args.command == "project":
         return _dispatch_project(args)
+    if args.command == "template":
+        return _dispatch_template(args)
     if args.command == "run":
         return cmd_run(args)
     if args.command == "approve-next":

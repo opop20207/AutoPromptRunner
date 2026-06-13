@@ -74,6 +74,25 @@ class Project:
 
 
 @dataclass
+class Template:
+    """A reusable prompt template, persisted in the ``templates`` table.
+
+    ``body`` is plain text that may contain ``{{placeholder}}`` tokens (see
+    ``autoprompt_runner.templates``). ``tags`` are simple labels, stored as a single
+    text column in SQLite but exposed here as a list. Templates carry no executable
+    content -- rendering only substitutes known placeholders.
+    """
+
+    id: int
+    name: str
+    description: str
+    body: str
+    tags: List[str]
+    created_at: str
+    updated_at: Optional[str] = None
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

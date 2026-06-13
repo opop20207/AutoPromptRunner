@@ -35,7 +35,10 @@ class ProjectResponse(BaseModel):
 
 
 class RunCreateRequest(BaseModel):
-    prompt: str
+    prompt: Optional[str] = None
+    template: Optional[str] = None
+    goal: Optional[str] = None
+    extra_context: Optional[str] = None
     project: Optional[str] = None
     provider: Optional[str] = None
     workspace: Optional[str] = None
@@ -114,3 +117,40 @@ class ArtifactDetailResponse(BaseModel):
     content: Optional[str] = None
     path: Optional[str] = None
     created_at: str
+
+
+class TemplateCreateRequest(BaseModel):
+    name: str
+    body: str
+    description: Optional[str] = ""
+    tags: List[str] = []
+
+
+class TemplateResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    body: str
+    tags: List[str] = []
+    created_at: str
+    updated_at: Optional[str] = None
+
+
+class TemplateRenderRequest(BaseModel):
+    project_name: Optional[str] = None
+    workspace: Optional[str] = None
+    goal: Optional[str] = None
+    changed_files: Optional[List[str]] = None
+    last_error: Optional[str] = None
+    extra_context: Optional[str] = None
+
+
+class TemplateRenderResponse(BaseModel):
+    name: str
+    rendered: str
+
+
+class TemplateSeedResponse(BaseModel):
+    seeded: int
+    skipped: int
+    total: int

@@ -417,6 +417,23 @@ pre.block.large {
   }
 }
 
+/* -- prompt templates -- */
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: #eef2f9;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 /* run status emphasis in lists */
 .rs {
   font-weight: 600;

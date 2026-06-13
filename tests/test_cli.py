@@ -357,5 +357,82 @@ class SafetyCliTests(_DbTestCase):
         self.assertTrue(storage.list_artifacts_for_run(self.db, run.id, artifact_type="safety_blocker"))
 
 
+class TemplateCliTests(_DbTestCase):
+    def test_seed_then_list_shows_builtin(self):
+        code, out, err = run_cli(["template", "seed", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        code, out, err = run_cli(["template", "list", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("Fix failing tests", out)
+
+    def test_add_and_show(self):
+        code, out, err = run_cli([
+            "template", "add", "--name", "Small step",
+            "--description", "next smallest task",
+            "--body", "Implement the next smallest task for {{project_name}}. Goal: {{goal}}",
+            "--db-path", self.db,
+        ])
+        self.assertEqual(code, 0)
+        code, out, err = run_cli(["template", "show", "--name", "Small step", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIn("{{project_name}}", out)
+
+    def test_add_duplicate_rejected(self):
+        run_cli(["template", "add", "--name", "Dup", "--body", "x", "--db-path", self.db])
+        code, out, err = run_cli(["template", "add", "--name", "Dup", "--body", "y", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("already exists", err.lower())
+
+    def test_render_substitutes_goal(self):
+        run_cli(["template", "seed", "--db-path", self.db])
+        code, out, err = run_cli([
+            "template", "render", "--name", "Fix failing tests",
+            "--goal", "Fix the placement preview tests", "--db-path", self.db,
+        ])
+        self.assertEqual(code, 0)
+        self.assertIn("Fix the placement preview tests", out)
+        self.assertNotIn("{{goal}}", out)
+
+    def test_delete_template(self):
+        run_cli(["template", "add", "--name", "Temp", "--body", "x", "--db-path", self.db])
+        code, out, err = run_cli(["template", "delete", "--name", "Temp", "--db-path", self.db])
+        self.assertEqual(code, 0)
+        self.assertIsNone(storage.get_template_by_name(self.db, "Temp"))
+
+    def test_render_missing_template_exits_nonzero(self):
+        run_cli(["init-db", "--db-path", self.db])
+        code, out, err = run_cli(["template", "render", "--name", "nope", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err.lower())
+
+
+class RunFromTemplateCliTests(_DbTestCase):
+    def test_run_from_template_creates_run(self):
+        run_cli(["template", "seed", "--db-path", self.db])
+        code, out, err = run_cli([
+            "run", "--template", "Fix failing tests",
+            "--goal", "Fix failing placement preview tests",
+            "--provider", "mock", "--max-loops", "1", "--no-approval", "--db-path", self.db,
+        ])
+        self.assertEqual(code, 0)
+        self.assertIn("DONE", out)
+        run = storage.get_run(self.db, self._latest_run_id())
+        self.assertIn("Fix failing placement preview tests", run.root_prompt)
+
+    def test_run_rejects_prompt_and_template_together(self):
+        run_cli(["template", "seed", "--db-path", self.db])
+        code, out, err = run_cli([
+            "run", "--prompt", "p", "--template", "Fix failing tests", "--db-path", self.db,
+        ])
+        self.assertNotEqual(code, 0)
+        self.assertIn("both", err.lower())
+
+    def test_run_missing_template_exits_nonzero(self):
+        run_cli(["init-db", "--db-path", self.db])
+        code, out, err = run_cli(["run", "--template", "nope", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

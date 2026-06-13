@@ -149,6 +149,75 @@ project > built-in defaults (`mock`, max-loops 1, timeout 1800, approval on). Fo
 is passed. Deleting a project profile removes only the stored settings; it does **not**
 delete the repository or any files on disk, and clears the default if it was default.
 
+## Prompt templates
+
+A **prompt template** stores reusable prompt text so common agent workflows can be
+started quickly. A template has a name, description, tags, and a plain-text body that may
+contain `{{placeholder}}` tokens. Templates are persisted in the same local SQLite
+database (the `templates` table) and are independent of runs -- deleting a template never
+deletes any runs.
+
+**Placeholder rules** (rendering is plain, deterministic string substitution -- no code
+is executed and no expression is evaluated):
+
+- Supported placeholders: `{{project_name}}`, `{{workspace}}`, `{{goal}}`,
+  `{{changed_files}}`, `{{last_error}}`, `{{extra_context}}`.
+- A supported placeholder with a missing value renders as an empty string.
+- Any **unknown** placeholder (for example `{{foo}}`) is left exactly as written.
+
+**Built-in templates** (added by `template seed`, never overwriting a template you have
+modified unless you pass `--force`): *Continue next task*, *Fix failing tests*, *Review
+git diff*, *Refactor small module*, *Update documentation*, *Generate next prompt only*,
+*Diagnose failure*, and *Reduce scope after large diff*.
+
+CLI:
+
+```
+python -m autoprompt_runner.cli template seed                       # insert built-ins if missing
+python -m autoprompt_runner.cli template list
+python -m autoprompt_runner.cli template show --name "Fix failing tests"
+python -m autoprompt_runner.cli template add \
+  --name "Small implementation step" \
+  --description "Implement the next smallest task safely" \
+  --body "Implement the next smallest task for {{project_name}}. Goal: {{goal}}"
+python -m autoprompt_runner.cli template render --name "Fix failing tests" \
+  --project FactoryColony --goal "Fix current test failures"
+python -m autoprompt_runner.cli template delete --name "Small implementation step"
+```
+
+Run from a template instead of a direct prompt (the template body is rendered and used as
+the run prompt). Passing both `--prompt` and `--template` is rejected with a clean error;
+the existing direct `--prompt` behavior is unchanged:
+
+```
+python -m autoprompt_runner.cli run --project FactoryColony \
+  --template "Fix failing tests" --goal "Fix failing placement preview tests"
+```
+
+API (`/templates` route group; same local database as the CLI):
+
+```
+curl -X POST http://127.0.0.1:8000/templates/seed
+curl http://127.0.0.1:8000/templates
+curl -X POST http://127.0.0.1:8000/templates \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Small step","body":"Implement the next task for {{project_name}}. Goal: {{goal}}","tags":["impl"]}'
+curl http://127.0.0.1:8000/templates/Small%20step
+curl -X POST http://127.0.0.1:8000/templates/Fix%20failing%20tests/render \
+  -H "Content-Type: application/json" -d '{"goal":"Fix the preview tests"}'
+curl -X DELETE http://127.0.0.1:8000/templates/Small%20step
+```
+
+`POST /runs` also accepts `template`, `goal`, and `extra_context`: when `template` is
+given it is rendered and used as the prompt; supplying both `prompt` and `template`
+returns `400`, and project/default resolution is unchanged.
+
+In the **web UI**, the *Templates* section lists templates (name, description, tags) with
+a *Seed built-ins* button and per-row *Use* / *Delete*; *New Template* creates a custom
+template. *New Run* has a template selector plus *Goal* and *Extra context* fields: pick a
+template to run from it (the direct prompt is disabled while a template is selected) and
+use *Preview rendered prompt* to see the rendered text before starting the run.
+
 ## Git artifact capture
 
 When a run's workspace is a Git repository, each step records read-only Git artifacts:

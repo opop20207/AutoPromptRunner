@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, config, safety, storage
+from .. import artifacts, config, safety, storage, templates
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
 from ..projects import ResolvedRunSettings, resolve_run_settings
@@ -86,23 +86,31 @@ class RunInputError(Exception):
 def resolve_run_inputs(
     db_path: Optional[str],
     *,
-    prompt: str,
+    prompt: Optional[str] = None,
     project: Optional[str] = None,
     provider: Optional[str] = None,
     workspace: Optional[str] = None,
     max_loops: Optional[int] = None,
     timeout_seconds: Optional[int] = None,
     no_approval: bool = False,
+    template: Optional[str] = None,
+    goal: Optional[str] = None,
+    extra_context: Optional[str] = None,
 ) -> Tuple[str, ResolvedRunSettings]:
     """Resolve and validate run inputs, shared by the CLI and the HTTP API.
 
     Applies project/default-project resolution (the same rules the CLI uses) and the
     same validation, raising :class:`RunInputError` on a bad input or a missing named
-    project. Returns the cleaned prompt and the resolved settings.
+    project. The prompt comes from either ``prompt`` or a named ``template`` (rendered
+    with the project/workspace/goal/extra_context values) -- supplying both is an error.
+    Returns the cleaned prompt and the resolved settings.
     """
-    text = (prompt or "").strip()
-    if not text:
-        raise RunInputError("invalid", "--prompt must not be empty")
+    prompt_text = (prompt or "").strip()
+    template_name = (template or "").strip()
+    if prompt_text and template_name:
+        raise RunInputError("invalid", "provide either --prompt or --template, not both")
+    if not prompt_text and not template_name:
+        raise RunInputError("invalid", "--prompt or --template is required")
     db_path = storage.init_db(db_path)
     if project:
         selected = storage.get_project_by_name(db_path, project)
@@ -118,6 +126,21 @@ def resolve_run_inputs(
         workspace=workspace,
         no_approval=no_approval,
     )
+    if template_name:
+        tmpl = storage.get_template_by_name(db_path, template_name)
+        if tmpl is None:
+            raise RunInputError("not_found", f"template '{template_name}' not found")
+        values = templates.build_render_values(
+            project_name=selected.name if selected is not None else "",
+            workspace=settings.workspace,
+            goal=goal,
+            extra_context=extra_context,
+        )
+        text = templates.render_template(tmpl.body, values).strip()
+        if not text:
+            raise RunInputError("invalid", f"template '{template_name}' rendered an empty prompt")
+    else:
+        text = prompt_text
     if settings.provider not in DEFAULT_PROVIDER_FACTORIES:
         supported = ", ".join(sorted(DEFAULT_PROVIDER_FACTORIES))
         raise RunInputError("invalid", f"unsupported provider '{settings.provider}'. Supported: {supported}")
