@@ -234,6 +234,40 @@ Interactive docs are served at `/docs` (Swagger UI) and `/redoc`. Errors use sta
 HTTP status codes (400 invalid request, 404 missing project/run/artifact, 409 invalid
 run state) and never leak stack traces or secrets. A frontend is not implemented yet.
 
+## Web UI (frontend)
+
+A minimal React + Vite + TypeScript single-page UI lives in `frontend/`. It is a thin
+shell over the HTTP API -- health, projects (list/create), runs (list/create/detail),
+and approve/reject. There is no router, state library, or UI framework, and no live-log
+streaming or auth yet.
+
+Run the backend and the frontend in two terminals:
+
+```
+# 1) Backend API (terminal 1)
+pip install -e ".[api]"
+python -m uvicorn autoprompt_runner.api.app:app --reload   # http://localhost:8000
+
+# 2) Frontend dev server (terminal 2)
+cd frontend
+npm install
+npm run dev                                                # http://localhost:5173
+```
+
+Open http://localhost:5173. The UI calls the API at `http://localhost:8000` by default;
+override it with the `VITE_API_BASE_URL` environment variable. A production build is
+`npm run build` (outputs `frontend/dist/`). The backend enables permissive CORS for
+local development.
+
+Example local workflow:
+
+1. Start the FastAPI backend.
+2. Start the frontend dev server and open it in a browser.
+3. Create a project profile (name, repo path, provider, limits) in **New Project**.
+4. Start a run in **New Run** (pick a project, or leave it blank for the default).
+5. Open the run in **Runs**, review its steps, and **Approve** or **Reject** the pending
+   next prompt.
+
 ## Runner Providers
 
 | Provider | Class | Status | Description |

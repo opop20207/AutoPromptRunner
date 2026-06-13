@@ -12,6 +12,7 @@ services; no business logic is duplicated here.
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .. import __version__
 from .routes import health, projects, runs
@@ -19,7 +20,17 @@ from .routes import health, projects, runs
 app = FastAPI(
     title="AutoPromptRunner API",
     version=__version__,
-    description="Local-first prompt orchestration over HTTP (no auth, no websockets, no frontend yet).",
+    description="Local-first prompt orchestration over HTTP (no auth, no websockets yet).",
+)
+
+# Permissive CORS so the local Vite dev frontend can call the API from the browser.
+# This is a local-only dev backend with no auth, and credentials are not used.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(health.router)
