@@ -5,6 +5,10 @@ persists each step, generates the next prompt, and gates execution behind an app
 when required. It enforces ``max_loops`` and never loops without a bound, satisfying
 the AGENTS.md "Prompt Loop Rules".
 
+Providers are resolved through a factory map (name -> factory(workspace,
+timeout_seconds) -> AgentRunner), so provider-specific construction stays isolated and
+no subprocess logic leaks into the service.
+
 Loop policy:
 * require_approval = True  -> a single step runs per call; the run then pauses at
   WAITING_APPROVAL with a PENDING approval (or ends DONE/FAILED).
@@ -13,16 +17,36 @@ Loop policy:
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Type
+from typing import Callable, Dict, Optional
 
 from .. import storage
 from ..models import AgentResult, StepExecutionReport
-from ..runners import AgentRunner, MockRunner
+from ..runners import AgentRunner, ClaudeCodeRunner, MockRunner
 from ..state import RunStatus
 from .prompt_generator import PromptGenerator
 
-# Providers available to the service in this step. Only the mock provider is supported.
-DEFAULT_PROVIDERS: Dict[str, Type[AgentRunner]] = {"mock": MockRunner}
+# A provider factory builds a runner from the per-run workspace and timeout.
+ProviderFactory = Callable[[Optional[str], Optional[int]], AgentRunner]
+
+_DEFAULT_TIMEOUT_SECONDS = 1800
+
+
+def _mock_factory(workspace: Optional[str], timeout_seconds: Optional[int]) -> AgentRunner:
+    return MockRunner()
+
+
+def _claude_code_factory(workspace: Optional[str], timeout_seconds: Optional[int]) -> AgentRunner:
+    return ClaudeCodeRunner(
+        workspace=workspace,
+        timeout_seconds=timeout_seconds if timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+# Supported providers and how to construct each runner. Only mock and claude-code.
+DEFAULT_PROVIDER_FACTORIES: Dict[str, ProviderFactory] = {
+    "mock": _mock_factory,
+    "claude-code": _claude_code_factory,
+}
 
 
 class RunServiceError(Exception):
@@ -35,11 +59,11 @@ class RunService:
     def __init__(
         self,
         db_path: Optional[str] = None,
-        providers: Optional[Dict[str, Type[AgentRunner]]] = None,
+        providers: Optional[Dict[str, ProviderFactory]] = None,
         generator: Optional[PromptGenerator] = None,
     ) -> None:
         self.db_path = storage.init_db(db_path)  # ensure DB exists; store resolved path
-        self.providers = providers if providers is not None else dict(DEFAULT_PROVIDERS)
+        self.providers = providers if providers is not None else dict(DEFAULT_PROVIDER_FACTORIES)
         self.generator = generator or PromptGenerator()
 
     # -- public API -----------------------------------------------------------
@@ -50,6 +74,8 @@ class RunService:
         provider: str,
         max_loops: int,
         require_approval: bool = True,
+        workspace: Optional[str] = None,
+        timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
     ) -> StepExecutionReport:
         """Create a run and execute it according to the loop policy."""
         if provider not in self.providers:
@@ -60,6 +86,8 @@ class RunService:
             provider=provider,
             max_loops=max_loops,
             require_approval=require_approval,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
         )
         storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
         return self._drive(
@@ -70,6 +98,8 @@ class RunService:
             require_approval=require_approval,
             loop_index=0,
             prompt=prompt,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
         )
 
     def approve_and_continue(self, run_id: int) -> StepExecutionReport:
@@ -94,6 +124,8 @@ class RunService:
             require_approval=run.require_approval,
             loop_index=next_index,
             prompt=pending.next_prompt,
+            workspace=run.workspace,
+            timeout_seconds=run.timeout_seconds if run.timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS,
         )
 
     def reject(self, run_id: int) -> StepExecutionReport:
@@ -119,6 +151,12 @@ class RunService:
 
     # -- internals ------------------------------------------------------------
 
+    def _make_runner(self, provider: str, workspace: Optional[str], timeout_seconds: Optional[int]) -> AgentRunner:
+        factory = self.providers.get(provider)
+        if factory is None:
+            raise RunServiceError(f"unsupported provider: {provider}")
+        return factory(workspace, timeout_seconds)
+
     def _drive(
         self,
         run_id: int,
@@ -128,6 +166,8 @@ class RunService:
         require_approval: bool,
         loop_index: int,
         prompt: str,
+        workspace: Optional[str],
+        timeout_seconds: Optional[int],
     ) -> StepExecutionReport:
         """Execute steps from ``loop_index`` per the loop policy and return a report.
 
@@ -135,7 +175,8 @@ class RunService:
         failed step, and -- when approval is required -- returns after a single step.
         """
         while True:
-            result = self.providers[provider]().run(prompt)
+            runner = self._make_runner(provider, workspace, timeout_seconds)
+            result = runner.run(prompt)
             loops_done = loop_index + 1
 
             if result.exit_code != 0:

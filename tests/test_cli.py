@@ -1,8 +1,9 @@
-"""Tests for the AutoPromptRunner CLI, including the approval-gate commands.
+"""Tests for the AutoPromptRunner CLI, including the claude-code provider paths.
 
-Standard-library only (unittest + tempfile). Every command that touches the database
-is given an explicit temporary ``--db-path`` so the tests never write into the working
-tree. Runnable via:
+Standard-library only (unittest + tempfile + unittest.mock). Every command that
+touches the database is given an explicit temporary ``--db-path`` so the tests never
+write into the working tree, and the claude-code subprocess is patched so no real
+``claude`` executable is required. Runnable via:
     python -m unittest discover -s tests -v
 """
 
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 if _SRC not in sys.path:
@@ -22,6 +24,8 @@ if _SRC not in sys.path:
 from autoprompt_runner import __version__, storage  # noqa: E402
 from autoprompt_runner.cli import main  # noqa: E402
 from autoprompt_runner.state import RunStatus  # noqa: E402
+
+_SUBPROCESS_RUN = "autoprompt_runner.runners.claude_code.subprocess.run"
 
 
 def run_cli(argv):
@@ -42,6 +46,7 @@ class VersionCommandTests(unittest.TestCase):
 class _DbTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
+        self.ws = self._tmp.name
         self.db = os.path.join(self._tmp.name, "autoprompt.db")
 
     def tearDown(self):
@@ -64,12 +69,33 @@ class RunValidationTests(_DbTestCase):
         self.assertIn("max-loops", err.lower())
 
     def test_unsupported_provider_is_rejected(self):
-        code, out, err = run_cli(["run", "--prompt", "hello", "--provider", "claude_code", "--db-path", self.db])
+        code, out, err = run_cli(["run", "--prompt", "hello", "--provider", "codex", "--db-path", self.db])
         self.assertNotEqual(code, 0)
         self.assertIn("provider", err.lower())
 
+    def test_timeout_seconds_must_be_positive(self):
+        code, out, err = run_cli(
+            ["run", "--prompt", "hello", "--timeout-seconds", "0", "--db-path", self.db]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("timeout", err.lower())
 
-class ApprovalFlowTests(_DbTestCase):
+    def test_claude_code_requires_workspace(self):
+        code, out, err = run_cli(["run", "--prompt", "hello", "--provider", "claude-code", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("workspace", err.lower())
+        self.assertFalse(os.path.exists(self.db))
+
+    def test_claude_code_rejects_invalid_workspace(self):
+        bad = os.path.join(self.ws, "no-such-dir")
+        code, out, err = run_cli(
+            ["run", "--prompt", "hello", "--provider", "claude-code", "--workspace", bad, "--db-path", self.db]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("workspace", err.lower())
+
+
+class MockProviderFlowTests(_DbTestCase):
     def test_init_db_command_creates_database(self):
         code, out, err = run_cli(["init-db", "--db-path", self.db])
         self.assertEqual(code, 0)
@@ -90,8 +116,7 @@ class ApprovalFlowTests(_DbTestCase):
         )
         self.assertEqual(code, 0)
         self.assertIn("DONE", out)
-        rid = self._latest_run_id()
-        self.assertEqual(len(storage.get_steps_for_run(self.db, rid)), 3)
+        self.assertEqual(len(storage.get_steps_for_run(self.db, self._latest_run_id())), 3)
 
     def test_approve_next_executes_step(self):
         run_cli(["run", "--prompt", "p", "--max-loops", "3", "--db-path", self.db])
@@ -115,7 +140,7 @@ class ApprovalFlowTests(_DbTestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("error", err.lower())
 
-    def test_reject_next_no_pending_exits_nonzero(self):
+    def test_reject_next_missing_run_exits_nonzero(self):
         run_cli(["init-db", "--db-path", self.db])
         code, out, err = run_cli(["reject-next", "--run-id", "999", "--db-path", self.db])
         self.assertNotEqual(code, 0)
@@ -133,6 +158,27 @@ class ApprovalFlowTests(_DbTestCase):
         code, out, err = run_cli(["show-run", "--id", "999", "--db-path", self.db])
         self.assertNotEqual(code, 0)
         self.assertIn("not found", err.lower())
+
+
+class ClaudeCodeProviderTests(_DbTestCase):
+    def test_run_claude_code_command_unavailable_stores_failed(self):
+        # Simulate the claude CLI being absent regardless of the test environment.
+        with mock.patch(_SUBPROCESS_RUN, side_effect=FileNotFoundError()):
+            code, out, err = run_cli(
+                [
+                    "run", "--prompt", "Review project", "--provider", "claude-code",
+                    "--workspace", self.ws, "--max-loops", "1", "--db-path", self.db,
+                ]
+            )
+        self.assertNotEqual(code, 0)  # FAILED -> non-zero exit
+        run = storage.get_run(self.db, self._latest_run_id())
+        self.assertEqual(run.status, RunStatus.FAILED.value)
+        self.assertEqual(run.provider, "claude-code")
+        self.assertEqual(run.workspace, self.ws)
+        steps = storage.get_steps_for_run(self.db, run.id)
+        self.assertEqual(len(steps), 1)
+        self.assertNotEqual(steps[0].exit_code, 0)
+        self.assertIn("not found", (steps[0].stderr or "").lower())
 
 
 if __name__ == "__main__":

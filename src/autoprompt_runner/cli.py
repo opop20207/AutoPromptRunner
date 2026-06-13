@@ -1,6 +1,6 @@
 """Command-line interface for AutoPromptRunner.
 
-CLI-first entry point (see PROJECT.md). Commands in this step:
+CLI-first entry point (see PROJECT.md). Commands:
 
 * ``version``      -- print the package version.
 * ``init-db``      -- create the local SQLite database.
@@ -11,23 +11,24 @@ CLI-first entry point (see PROJECT.md). Commands in this step:
 * ``list-runs``    -- list recent runs.
 * ``show-run``     -- show one run, its steps, and any pending approval.
 
-Real provider execution (Claude Code, Codex) and a web UI are not implemented yet.
+Providers: ``mock`` (offline, default) and ``claude-code`` (the Claude Code CLI, run
+in a required ``--workspace``). The Codex runner and a web UI are not implemented yet.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
-from typing import Dict, Optional, Sequence, Type
+from typing import Optional, Sequence
 
 from . import __version__, storage
-from .runners import AgentRunner, MockRunner
 from .models import StepExecutionReport
-from .services import RunService, RunServiceError
+from .services.run_service import DEFAULT_PROVIDER_FACTORIES, RunService, RunServiceError
 from .state import RunStatus
 
-# Registry of providers exposed by the CLI. Only the mock provider is supported here.
-PROVIDERS: Dict[str, Type[AgentRunner]] = {"mock": MockRunner}
+# Provider names the CLI accepts (resolution/construction lives in RunService).
+SUPPORTED_PROVIDERS = tuple(sorted(DEFAULT_PROVIDER_FACTORIES))
 
 # Exit codes.
 EXIT_OK = 0
@@ -63,7 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--prompt", required=True, help="Prompt to send. Must not be empty.")
     run_parser.add_argument(
-        "--provider", default="mock", help="Provider to use. Only 'mock' is supported in this step."
+        "--provider", default="mock",
+        help="Provider to use: mock (default) or claude-code.",
     )
     run_parser.add_argument(
         "--max-loops", dest="max_loops", type=int, default=1, help="Max agent invocations. Must be >= 1."
@@ -71,6 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--no-approval", dest="no_approval", action="store_true",
         help="Disable the approval gate and auto-run up to --max-loops.",
+    )
+    run_parser.add_argument(
+        "--workspace", default=None,
+        help="Workspace directory for the provider. Required for claude-code.",
+    )
+    run_parser.add_argument(
+        "--timeout-seconds", dest="timeout_seconds", type=int, default=1800,
+        help="Subprocess timeout in seconds (claude-code). Must be >= 1.",
     )
     _add_db_path(run_parser)
 
@@ -116,18 +126,34 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.max_loops < 1:
         print("error: --max-loops must be >= 1", file=sys.stderr)
         return EXIT_USAGE
-    if args.provider not in PROVIDERS:
-        supported = ", ".join(sorted(PROVIDERS))
+    if args.provider not in DEFAULT_PROVIDER_FACTORIES:
+        supported = ", ".join(SUPPORTED_PROVIDERS)
         print(f"error: unsupported provider '{args.provider}'. Supported: {supported}", file=sys.stderr)
         return EXIT_USAGE
+    if args.timeout_seconds < 1:
+        print("error: --timeout-seconds must be >= 1", file=sys.stderr)
+        return EXIT_USAGE
+    if args.provider == "claude-code":
+        if not args.workspace:
+            print("error: --workspace is required for the claude-code provider", file=sys.stderr)
+            return EXIT_USAGE
+        if not os.path.isdir(args.workspace):
+            print(f"error: workspace does not exist or is not a directory: {args.workspace}", file=sys.stderr)
+            return EXIT_USAGE
 
     service = RunService(args.db_path)
-    report = service.start(
-        prompt=prompt,
-        provider=args.provider,
-        max_loops=args.max_loops,
-        require_approval=not args.no_approval,
-    )
+    try:
+        report = service.start(
+            prompt=prompt,
+            provider=args.provider,
+            max_loops=args.max_loops,
+            require_approval=not args.no_approval,
+            workspace=args.workspace,
+            timeout_seconds=args.timeout_seconds,
+        )
+    except (RunServiceError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     _print_step_report(report)
     return _exit_code_for(report)
 
@@ -136,7 +162,7 @@ def cmd_approve_next(args: argparse.Namespace) -> int:
     service = RunService(args.db_path)
     try:
         report = service.approve_and_continue(args.run_id)
-    except RunServiceError as exc:
+    except (RunServiceError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_NOT_FOUND
     _print_step_report(report)
@@ -147,7 +173,7 @@ def cmd_reject_next(args: argparse.Namespace) -> int:
     service = RunService(args.db_path)
     try:
         report = service.reject(args.run_id)
-    except RunServiceError as exc:
+    except (RunServiceError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_NOT_FOUND
     _print_step_report(report)
@@ -160,10 +186,10 @@ def cmd_list_runs(args: argparse.Namespace) -> int:
     if not runs:
         print("No runs found.")
         return EXIT_OK
-    print(f"{'ID':>4}  {'STATUS':<16}  {'PROVIDER':<10}  {'CREATED_AT':<32}  PROMPT")
+    print(f"{'ID':>4}  {'STATUS':<16}  {'PROVIDER':<12}  {'CREATED_AT':<32}  PROMPT")
     for run in runs:
         print(
-            f"{run.id:>4}  {run.status:<16}  {run.provider:<10}  "
+            f"{run.id:>4}  {run.status:<16}  {run.provider:<12}  "
             f"{(run.created_at or ''):<32}  {_shorten(run.root_prompt, 40)}"
         )
     return EXIT_OK
@@ -182,6 +208,7 @@ def cmd_show_run(args: argparse.Namespace) -> int:
         f"Run #{run.id}",
         f"  status          : {run.status}",
         f"  provider        : {run.provider}",
+        f"  workspace       : {run.workspace or '(none)'}",
         f"  root_prompt     : {run.root_prompt}",
         f"  max_loops       : {run.max_loops}",
         f"  require_approval: {run.require_approval}",
@@ -200,6 +227,8 @@ def cmd_show_run(args: argparse.Namespace) -> int:
         print(f"      prompt     : {_shorten(step.prompt, 70)}")
         if step.stdout:
             print(f"      stdout     : {_shorten(step.stdout, 80)}")
+        if step.stderr:
+            print(f"      stderr     : {_shorten(step.stderr, 80)}")
         if step.next_prompt:
             print(f"      next_prompt: {_shorten(step.next_prompt, 80)}")
 

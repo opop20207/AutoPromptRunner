@@ -28,12 +28,18 @@ class AgentResult:
 
 @dataclass
 class RunRequest:
-    """A request to execute one prompt against a provider under explicit limits."""
+    """A request to execute one prompt against a provider under explicit limits.
+
+    ``workspace`` is the directory a real provider (such as claude-code) runs in;
+    ``timeout_seconds`` bounds a provider subprocess.
+    """
 
     prompt: str
     provider: str = "mock"
     max_loops: int = 1
     require_approval: bool = True
+    workspace: Optional[str] = None
+    timeout_seconds: int = 1800
 
 
 @dataclass
@@ -52,7 +58,8 @@ class StoredRun:
     """A run row as persisted in the ``runs`` table.
 
     ``require_approval`` is stored as an integer (0/1) in SQLite but exposed here as a
-    ``bool``. ``project_id`` and ``finished_at`` are ``None`` until set.
+    ``bool``. ``project_id``, ``finished_at``, ``workspace``, and ``timeout_seconds``
+    are ``None`` when not set.
     """
 
     id: int
@@ -64,6 +71,8 @@ class StoredRun:
     require_approval: bool
     created_at: str
     finished_at: Optional[str] = None
+    workspace: Optional[str] = None
+    timeout_seconds: Optional[int] = None
 
 
 @dataclass
@@ -125,6 +134,8 @@ class StepExecutionRequest:
     prompt: str
     provider: str
     loop_index: int
+    workspace: Optional[str] = None
+    timeout_seconds: int = 1800
 
 
 @dataclass

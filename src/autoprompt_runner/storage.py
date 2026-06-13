@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS runs (
     require_approval INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     finished_at TEXT,
+    workspace TEXT,
+    timeout_seconds INTEGER,
     FOREIGN KEY (project_id) REFERENCES projects (id)
 );
 
@@ -69,6 +71,13 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 """
 
+# Columns added after the initial schema. Applied idempotently for backward
+# compatibility with databases created before these columns existed.
+_RUNS_MIGRATIONS = (
+    ("workspace", "ALTER TABLE runs ADD COLUMN workspace TEXT"),
+    ("timeout_seconds", "ALTER TABLE runs ADD COLUMN timeout_seconds INTEGER"),
+)
+
 
 def _utcnow_iso() -> str:
     """Current UTC time as an ISO 8601 string."""
@@ -86,10 +95,23 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_runs(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    for column, statement in _RUNS_MIGRATIONS:
+        if column not in existing:
+            conn.execute(statement)
+
+
+def _opt(row: sqlite3.Row, column: str):
+    """Return ``row[column]`` if the column is present, else ``None`` (older rows)."""
+    return row[column] if column in row.keys() else None
+
+
 def init_db(db_path: Optional[str] = None) -> str:
     """Create the database file and tables if absent. Return the resolved path.
 
-    The parent directory is created when it does not yet exist.
+    The parent directory is created when it does not yet exist, and any
+    backward-compatible column migrations are applied.
     """
     path = _resolve_db_path(db_path)
     parent = os.path.dirname(os.path.abspath(path))
@@ -97,6 +119,7 @@ def init_db(db_path: Optional[str] = None) -> str:
     conn = _connect(path)
     try:
         conn.executescript(SCHEMA)
+        _migrate_runs(conn)
         conn.commit()
     finally:
         conn.close()
@@ -110,6 +133,8 @@ def create_run(
     max_loops: int,
     require_approval: bool,
     project_id: Optional[int] = None,
+    workspace: Optional[str] = None,
+    timeout_seconds: Optional[int] = None,
 ) -> int:
     """Insert a new run in the CREATED state and return its id."""
     path = _resolve_db_path(db_path)
@@ -117,8 +142,9 @@ def create_run(
     try:
         cur = conn.execute(
             "INSERT INTO runs "
-            "(project_id, root_prompt, provider, status, max_loops, require_approval, created_at, finished_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(project_id, root_prompt, provider, status, max_loops, require_approval, "
+            "created_at, finished_at, workspace, timeout_seconds) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 root_prompt,
@@ -128,6 +154,8 @@ def create_run(
                 1 if require_approval else 0,
                 _utcnow_iso(),
                 None,
+                workspace,
+                int(timeout_seconds) if timeout_seconds is not None else None,
             ),
         )
         conn.commit()
@@ -333,6 +361,8 @@ def _row_to_run(row: sqlite3.Row) -> StoredRun:
         require_approval=bool(row["require_approval"]),
         created_at=row["created_at"],
         finished_at=row["finished_at"],
+        workspace=_opt(row, "workspace"),
+        timeout_seconds=_opt(row, "timeout_seconds"),
     )
 
 

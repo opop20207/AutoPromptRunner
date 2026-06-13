@@ -65,9 +65,9 @@ class RunServiceTests(unittest.TestCase):
         self.assertEqual(storage.get_run(self.db, report.run_id).status, RunStatus.DONE.value)
 
     def test_failure_marks_run_failed_and_stores_fix_prompt(self):
-        report = self._service(providers={"mock": FailingRunner}).start(
-            "p", "mock", max_loops=3, require_approval=False
-        )
+        report = self._service(
+            providers={"mock": lambda workspace, timeout_seconds: FailingRunner()}
+        ).start("p", "mock", max_loops=3, require_approval=False)
         self.assertEqual(report.run_status, RunStatus.FAILED.value)
         self.assertEqual(report.exit_code, 1)
         self.assertIsNotNone(report.next_prompt)
