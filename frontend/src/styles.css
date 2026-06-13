@@ -44,9 +44,9 @@ body {
 }
 
 .app-main {
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 16px 20px 48px;
-  max-width: 1100px;
-  margin: 0 auto;
 }
 
 .columns {
@@ -464,4 +464,221 @@ pre.block.large {
 .rs-stopped,
 .rs-created {
   color: var(--muted);
+}
+
+/* -- app shell: header tag + sidebar + main -- */
+
+.app-header .app-tag {
+  margin-left: auto;
+  color: #aeb6c2;
+  font-size: 11px;
+}
+
+.app-body {
+  display: flex;
+  align-items: flex-start;
+}
+
+.sidebar {
+  flex: 0 0 176px;
+  width: 176px;
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  min-height: calc(100vh - 45px);
+  padding: 12px 8px;
+  position: sticky;
+  top: 0;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-btn {
+  text-align: left;
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--text);
+}
+
+.nav-btn:hover:not(:disabled) {
+  background: #f0f4fb;
+  color: var(--text);
+  border-color: transparent;
+}
+
+.nav-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* -- dashboard cards -- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.card .card-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.card .card-value {
+  font-size: 22px;
+  font-weight: 600;
+  margin-top: 4px;
+  word-break: break-word;
+}
+
+.card .card-value.small {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.card.warn {
+  border-color: #e3c08a;
+  background: #fdf6e9;
+}
+
+.link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* -- status badges (runs, queue, approvals, locks, cancellations, worktrees) -- */
+
+.sbadge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #eceef2;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.sbadge-running,
+.sbadge-requested,
+.sbadge-queued,
+.sbadge-pending {
+  background: #e4ecfb;
+  color: var(--accent);
+}
+
+.sbadge-waiting-approval {
+  background: #fdf3da;
+  color: #9a6a00;
+}
+
+.sbadge-done,
+.sbadge-completed,
+.sbadge-approved,
+.sbadge-released,
+.sbadge-active {
+  background: #e1f3e8;
+  color: var(--ok);
+}
+
+.sbadge-failed,
+.sbadge-rejected,
+.sbadge-expired {
+  background: #fbe5e3;
+  color: var(--error);
+}
+
+/* -- run list filters + run form mode toggle / resolved config -- */
+
+.filters {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.filters select {
+  font: inherit;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.mode-toggle {
+  display: flex;
+  gap: 6px;
+}
+
+.mode-toggle button {
+  flex: 1;
+}
+
+.mode-toggle button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.resolved {
+  background: #f7f9fc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.resolved .kv {
+  grid-template-columns: 110px 1fr;
+  margin-top: 4px;
+}
+
+@media (max-width: 720px) {
+  .app-body {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: auto;
+    flex: none;
+    min-height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    position: static;
+  }
+  .sidebar-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .nav-btn {
+    width: auto;
+  }
 }

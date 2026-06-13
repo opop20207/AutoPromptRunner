@@ -1,16 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
 import { CANCELLABLE_RUN_STATUSES, type RunSummary } from "../types";
 import { Section } from "./Layout";
+import { StatusBadge } from "./StatusBadge";
 
-function shorten(text: string, limit = 50): string {
+const STATUS_OPTIONS = ["all", "CREATED", "RUNNING", "WAITING_APPROVAL", "DONE", "FAILED", "STOPPED"];
+
+function shorten(text: string, limit = 60): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   return collapsed.length <= limit ? collapsed : collapsed.slice(0, limit - 1) + "…";
-}
-
-function statusClass(status: string): string {
-  return "rs rs-" + status.toLowerCase().replace(/_/g, "-");
 }
 
 export function RunList({
@@ -24,6 +23,8 @@ export function RunList({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [providerFilter, setProviderFilter] = useState("all");
 
   async function load() {
     setLoading(true);
@@ -55,6 +56,16 @@ export function RunList({
     }
   }
 
+  const providers = useMemo(
+    () => ["all", ...Array.from(new Set(runs.map((r) => r.provider)))],
+    [runs],
+  );
+  const filtered = runs.filter(
+    (r) =>
+      (statusFilter === "all" || r.status === statusFilter) &&
+      (providerFilter === "all" || r.provider === providerFilter),
+  );
+
   return (
     <Section
       title="Runs"
@@ -64,10 +75,35 @@ export function RunList({
         </button>
       }
     >
+      <div className="filters">
+        <label>
+          Status
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Provider
+          <select value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)}>
+            {providers.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="muted">{filtered.length} run(s)</span>
+      </div>
+
       {error && <p className="error">{error}</p>}
-      {loading && <p className="muted">Loading…</p>}
+      {loading && runs.length === 0 && <p className="muted">Loading…</p>}
       {!loading && !error && runs.length === 0 && <p className="muted">No runs yet.</p>}
-      {runs.length > 0 && (
+      {runs.length > 0 && filtered.length === 0 && <p className="muted">No runs match the filters.</p>}
+      {filtered.length > 0 && (
         <table className="table">
           <thead>
             <tr>
@@ -81,13 +117,13 @@ export function RunList({
             </tr>
           </thead>
           <tbody>
-            {runs.map((run) => (
+            {filtered.map((run) => (
               <tr key={run.id} className="clickable" onClick={() => onSelect(run.id)}>
                 <td>{run.id}</td>
                 <td>
-                  <span className={statusClass(run.status)}>{run.status}</span>
+                  <StatusBadge status={run.status} />
                 </td>
-                <td>{run.queue_status ? <span className="status">{run.queue_status}</span> : "—"}</td>
+                <td>{run.queue_status ? <StatusBadge status={run.queue_status} /> : "—"}</td>
                 <td>{run.provider}</td>
                 <td className="mono">{run.created_at}</td>
                 <td>{shorten(run.prompt)}</td>

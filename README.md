@@ -696,37 +696,50 @@ run state) and never leak stack traces or secrets. A frontend is not implemented
 
 ## Web UI (frontend)
 
-A minimal React + Vite + TypeScript single-page UI lives in `frontend/`. It is a thin
-shell over the HTTP API -- health, projects (list/create), runs (list/create/detail),
-and approve/reject. There is no router, state library, or UI framework, and no live-log
-streaming or auth yet.
+A minimal React + Vite + TypeScript **dashboard** lives in `frontend/` (see
+[frontend/README.md](frontend/README.md)). It is a thin, **local-first and unauthenticated**
+shell over the HTTP API -- no router, no state library, no UI framework. A left **sidebar**
+navigates between sections with simple local state (no routing): **Overview**,
+**Projects**, **Templates**, **Worktrees**, **New Run**, **Runs**, **Queue**, and -- once a
+run is open -- **Run Detail**. The active section is highlighted.
 
-Run the backend and the frontend in two terminals:
+- **Overview** shows compact cards: backend health, recent-run count, queued / running
+  jobs, failed runs, the default and selected project, and a reminder to start a worker
+  when jobs are queued.
+- **New Run** offers two explicit modes (direct prompt or from a template), a worktree
+  selector, and a live "resolved execution config" summary (project, worktree, provider,
+  workspace, max loops, timeout, approval mode, queued vs run-now) before you submit.
+- **Runs** lists runs with status / provider filters and colored status badges; click a
+  row to open the detail, or cancel a cancellable run inline.
+
+Run the backend, a worker, and the frontend (the `scripts/` helpers wrap these):
 
 ```
-# 1) Backend API (terminal 1)
+# 1) Backend API
 pip install -e ".[api]"
-python -m uvicorn autoprompt_runner.api.app:app --reload   # http://localhost:8000
+scripts/dev_api.sh            # or: python -m uvicorn autoprompt_runner.api.app:app --reload
 
-# 2) Frontend dev server (terminal 2)
-cd frontend
-npm install
-npm run dev                                                # http://localhost:5173
+# 2) Background worker (executes queued runs)
+scripts/dev_worker.sh         # or: python -m autoprompt_runner.cli worker run
+
+# 3) Frontend dev server
+scripts/dev_frontend.sh       # or: cd frontend && npm install && npm run dev
 ```
 
 Open http://localhost:5173. The UI calls the API at `http://localhost:8000` by default;
-override it with the `VITE_API_BASE_URL` environment variable. A production build is
-`npm run build` (outputs `frontend/dist/`). The backend enables permissive CORS for
-local development.
+override it with `VITE_API_BASE_URL`. A production build is `npm run build` (outputs
+`frontend/dist/`); the backend enables permissive CORS for local development.
 
-Example local workflow:
+**Common web workflow:**
 
-1. Start the FastAPI backend.
-2. Start the frontend dev server and open it in a browser.
-3. Create a project profile (name, repo path, provider, limits) in **New Project**.
-4. Start a run in **New Run** (pick a project, or leave it blank for the default).
-5. Open the run in **Runs**, review its steps, and **Approve** or **Reject** the pending
-   next prompt.
+1. Start the API, a worker, and the frontend (above).
+2. In **Projects**, create and (optionally) set a default project profile.
+3. In **New Run**, choose direct or template mode, review the resolved config, and submit.
+4. The run opens in **Run Detail**; inspect its steps, changed files, diff stat, and
+   artifacts.
+5. **Approve** / **Reject** a pending next prompt, or **Cancel** a queued / running run.
+6. **Queue** shows queued / running / done jobs -- cancel queued ones (running
+   cancellation is best-effort).
 
 ### Run detail and artifact review
 
@@ -751,7 +764,7 @@ run detail, the run list, and the artifacts.
 
 ### Live logs (polling)
 
-The **Live log** panel near the top of the run detail polls `GET /runs/{id}/logs` every
+The **Logs** panel in the run detail polls `GET /runs/{id}/logs` every
 2 seconds while the run is `RUNNING` or `WAITING_APPROVAL`, and stops once the run is
 `DONE`, `FAILED`, or `STOPPED`. It shows the run status, the latest step id, and the
 latest stdout/stderr in scrollable monospace blocks, with **Refresh** and

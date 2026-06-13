@@ -31,6 +31,7 @@ export function RunForm({
   onWorktreeChange: (name: string) => void;
   onCreated: (runId: number) => void;
 }) {
+  const [mode, setMode] = useState<"direct" | "template">("direct");
   const [prompt, setPrompt] = useState("");
   const [goal, setGoal] = useState("");
   const [extraContext, setExtraContext] = useState("");
@@ -48,21 +49,14 @@ export function RunForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const usingTemplate = template.trim() !== "";
+  const usingTemplate = mode === "template";
   const selectedWorktree = worktrees.find((w) => w.name === worktree) ?? null;
   // Resolved workspace precedence: explicit workspace > worktree path > project repo_path.
   const resolvedWorkspace = workspace.trim() || selectedWorktree?.path || "(project default)";
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .listTemplates()
-      .then((items) => {
-        if (!cancelled) setTemplates(items);
-      })
-      .catch(() => {
-        /* the template selector is optional; ignore load errors here */
-      });
+    api.listTemplates().then((items) => !cancelled && setTemplates(items)).catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -70,26 +64,24 @@ export function RunForm({
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .listWorktrees()
-      .then((items) => {
-        if (!cancelled) setWorktrees(items);
-      })
-      .catch(() => {
-        /* the worktree selector is optional; ignore load errors here */
-      });
+    api.listWorktrees().then((items) => !cancelled && setWorktrees(items)).catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [worktreeRefresh]);
 
-  // Drop a stale preview whenever an input that feeds it changes.
   useEffect(() => {
-    setPreview(null);
+    setPreview(null); // drop a stale preview when an input that feeds it changes
   }, [template, goal, extraContext, project, workspace]);
 
+  function switchMode(next: "direct" | "template") {
+    setMode(next);
+    setError(null);
+    if (next === "direct") onTemplateChange("");
+  }
+
   async function previewTemplate() {
-    if (!usingTemplate) return;
+    if (!usingTemplate || !template) return;
     setError(null);
     try {
       const result = await api.renderTemplate(template, {
@@ -106,9 +98,17 @@ export function RunForm({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setBusy(true);
     setError(null);
     setNotice(null);
+    if (usingTemplate && !template.trim()) {
+      setError("Select a template, or switch to direct prompt mode.");
+      return;
+    }
+    if (!usingTemplate && !prompt.trim()) {
+      setError("Enter a prompt.");
+      return;
+    }
+    setBusy(true);
     try {
       const created = await api.createRun({
         prompt: usingTemplate ? null : prompt,
@@ -126,10 +126,8 @@ export function RunForm({
         queued,
       });
       setPrompt("");
-      if (created.queue_status === "QUEUED") {
-        const job = created.queue_job_id ? ` (job ${created.queue_job_id})` : "";
-        setNotice(`Queued run #${created.id}${job}. Start a worker to execute it.`);
-      }
+      const job = created.queue_job_id ? ` (queue job ${created.queue_job_id})` : "";
+      setNotice(`Run #${created.id} ${created.queue_status === "QUEUED" ? "queued" : "created"}${job}.`);
       onCreated(created.id);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -145,44 +143,60 @@ export function RunForm({
   return (
     <Section title="New Run">
       <form className="form" onSubmit={submit}>
-        <label>
-          Template (optional; overrides the direct prompt)
-          <select value={template} onChange={(e) => onTemplateChange(e.target.value)}>
-            <option value="">(direct prompt — no template)</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.name}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Prompt {usingTemplate ? "(disabled while a template is selected)" : ""}
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            required={!usingTemplate}
-            disabled={usingTemplate}
-          />
-        </label>
-        <label>
-          Goal (fills {"{{goal}}"} in the template)
-          <input value={goal} onChange={(e) => setGoal(e.target.value)} />
-        </label>
-        <label>
-          Extra context (fills {"{{extra_context}}"})
-          <input value={extraContext} onChange={(e) => setExtraContext(e.target.value)} />
-        </label>
-        {usingTemplate && (
-          <div className="row-actions">
-            <button type="button" onClick={() => void previewTemplate()}>
-              Preview rendered prompt
-            </button>
-          </div>
+        <div className="mode-toggle">
+          <button
+            type="button"
+            className={mode === "direct" ? "active" : ""}
+            onClick={() => switchMode("direct")}
+          >
+            Direct prompt
+          </button>
+          <button
+            type="button"
+            className={mode === "template" ? "active" : ""}
+            onClick={() => switchMode("template")}
+          >
+            From template
+          </button>
+        </div>
+
+        {mode === "direct" ? (
+          <label>
+            Prompt
+            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+          </label>
+        ) : (
+          <>
+            <label>
+              Template
+              <select value={template} onChange={(e) => onTemplateChange(e.target.value)}>
+                <option value="">(select a template)</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Goal (fills {"{{goal}}"})
+              <input value={goal} onChange={(e) => setGoal(e.target.value)} />
+            </label>
+            <label>
+              Extra context (fills {"{{extra_context}}"})
+              <input value={extraContext} onChange={(e) => setExtraContext(e.target.value)} />
+            </label>
+            <div className="row-actions">
+              <button type="button" onClick={() => void previewTemplate()} disabled={!template}>
+                Preview rendered prompt
+              </button>
+            </div>
+            {preview !== null && <pre className="block">{preview || "(empty)"}</pre>}
+          </>
         )}
-        {usingTemplate && preview !== null && <pre className="block">{preview || "(empty)"}</pre>}
+
         <label>
-          Project (optional; blank uses the default project)
+          Project (blank uses the default project)
           <input value={project} onChange={(e) => onProjectChange(e.target.value)} />
         </label>
         <label>
@@ -196,11 +210,6 @@ export function RunForm({
             ))}
           </select>
         </label>
-        {worktree.trim() !== "" && (
-          <p className="muted">
-            Resolved workspace: <span className="mono">{resolvedWorkspace}</span>
-          </p>
-        )}
         <label>
           Provider override
           <select value={provider} onChange={(e) => setProvider(e.target.value)}>
@@ -237,25 +246,40 @@ export function RunForm({
           />
         </label>
         <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={requireApproval}
-            onChange={(e) => setRequireApproval(e.target.checked)}
-          />
+          <input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)} />
           Require approval
         </label>
         <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={showNextPrompt}
-            onChange={(e) => setShowNextPrompt(e.target.checked)}
-          />
+          <input type="checkbox" checked={showNextPrompt} onChange={(e) => setShowNextPrompt(e.target.checked)} />
           Show full next prompt
         </label>
         <label className="checkbox">
           <input type="checkbox" checked={queued} onChange={(e) => setQueued(e.target.checked)} />
           Queue run (a background worker executes it)
         </label>
+
+        <div className="resolved">
+          <strong>Resolved execution config</strong>
+          <dl className="kv">
+            <dt>Project</dt>
+            <dd>{project.trim() || "(default project)"}</dd>
+            <dt>Worktree</dt>
+            <dd>{worktree.trim() || "(none)"}</dd>
+            <dt>Provider</dt>
+            <dd>{provider || "(project / default)"}</dd>
+            <dt>Workspace</dt>
+            <dd className="mono">{resolvedWorkspace}</dd>
+            <dt>Max loops</dt>
+            <dd>{maxLoops || "(project / default)"}</dd>
+            <dt>Timeout</dt>
+            <dd>{timeoutSeconds || "(project / default)"}</dd>
+            <dt>Approval</dt>
+            <dd>{requireApproval ? "approval gate" : "auto-run"}</dd>
+            <dt>Execution</dt>
+            <dd>{queued ? "queued (background worker)" : "run now"}</dd>
+          </dl>
+        </div>
+
         {error && <p className="error">{error}</p>}
         {notice && <p className="muted">{notice}</p>}
         <button type="submit" className="primary" disabled={busy}>

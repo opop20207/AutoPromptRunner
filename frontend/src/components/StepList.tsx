@@ -1,4 +1,5 @@
 import type { Step } from "../types";
+import { StatusBadge } from "./StatusBadge";
 
 function preview(text: string | null, limit = 200): string {
   if (!text) return "";
@@ -16,7 +17,7 @@ export function StepList({ steps }: { steps: Step[] }) {
         <div className="step" key={step.id}>
           <div className="step-head">
             <span>step #{step.loop_index}</span>
-            <span className="status">{step.status}</span>
+            <StatusBadge status={step.status} />
             <span className="muted">exit {step.exit_code ?? "-"}</span>
           </div>
           <div className="step-times muted">

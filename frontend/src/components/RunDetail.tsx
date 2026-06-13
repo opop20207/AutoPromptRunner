@@ -13,6 +13,7 @@ import { LiveLogPanel } from "./LiveLogPanel";
 import { LockPanel } from "./LockPanel";
 import { QueuePanel } from "./QueuePanel";
 import { SafetyPanel } from "./SafetyPanel";
+import { StatusBadge } from "./StatusBadge";
 import { StepList } from "./StepList";
 
 export function RunDetail({
@@ -64,30 +65,31 @@ export function RunDetail({
         ) : undefined
       }
     >
-      {runId === null && <p className="muted">Select a run to inspect its steps and artifacts.</p>}
-      {loading && <p className="muted">Loading…</p>}
+      {runId === null && <p className="muted">Select a run from the Runs list to inspect it.</p>}
+      {loading && !detail && <p className="muted">Loading…</p>}
       {error && <p className="error">{error}</p>}
       {detail && !error && (
         <div className="detail">
+          {/* 1. Summary + 2. Current status */}
           <div className="subsection">
-            <h3>Summary</h3>
+            <h3>
+              Run #{detail.id} <StatusBadge status={detail.status} />
+            </h3>
             <dl className="kv">
-              <dt>Run</dt>
-              <dd>#{detail.id}</dd>
-              <dt>Status</dt>
-              <dd className="status">{detail.status}</dd>
-              <dt>Queue</dt>
-              <dd>{detail.queue_status ?? "(not queued)"}</dd>
-              <dt>Cancellation</dt>
-              <dd>{detail.cancellation_status ?? "(none)"}</dd>
               <dt>Provider</dt>
               <dd>{detail.provider}</dd>
+              <dt>Queue</dt>
+              <dd>{detail.queue_status ? <StatusBadge status={detail.queue_status} /> : "(not queued)"}</dd>
+              <dt>Cancellation</dt>
+              <dd>{detail.cancellation_status ? <StatusBadge status={detail.cancellation_status} /> : "(none)"}</dd>
               <dt>Workspace</dt>
               <dd className="mono">{detail.workspace ?? "(none)"}</dd>
               <dt>Root prompt</dt>
               <dd>{detail.prompt}</dd>
               <dt>Max loops</dt>
               <dd>{detail.max_loops}</dd>
+              <dt>Approval</dt>
+              <dd>{detail.require_approval ? "approval gate" : "auto-run"}</dd>
               <dt>Created</dt>
               <dd className="mono">{detail.created_at}</dd>
               <dt>Finished</dt>
@@ -95,36 +97,27 @@ export function RunDetail({
             </dl>
           </div>
 
-          <div className="subsection">
-            <h3>Live log</h3>
-            <LiveLogPanel runId={detail.id} runStatus={detail.status} onTerminal={onChanged} />
-          </div>
+          {/* 3. Approval (only when one is pending) */}
+          {detail.pending_approval && (
+            <div className="subsection">
+              <h3>Approval — next prompt</h3>
+              <ApprovalPanel runId={detail.id} approval={detail.pending_approval} onResolved={onChanged} />
+            </div>
+          )}
 
+          {/* 4. Safety */}
           <div className="subsection">
             <h3>Safety</h3>
             <SafetyPanel artifacts={detail.artifacts} />
           </div>
 
-          <div className="subsection">
-            <h3>Locks</h3>
-            <LockPanel runId={detail.id} refreshKey={artifactRefresh} />
-          </div>
-
-          <div className="subsection">
-            <h3>Queue</h3>
-            <QueuePanel runId={detail.id} refreshKey={artifactRefresh} />
-          </div>
-
-          <div className="subsection">
-            <h3>Cancel</h3>
-            <CancelPanel run={detail} onCancelled={onChanged} />
-          </div>
-
+          {/* 5. Steps */}
           <div className="subsection">
             <h3>Steps ({detail.steps.length})</h3>
             <StepList steps={detail.steps} />
           </div>
 
+          {/* 6. Changed files + 7. Diff stat */}
           <div className="detail-grid">
             <div className="subsection">
               <h3>Changed files</h3>
@@ -136,6 +129,7 @@ export function RunDetail({
             </div>
           </div>
 
+          {/* 8. Artifacts (list + full viewer) */}
           <div className="detail-grid">
             <div className="subsection">
               <h3>Artifacts</h3>
@@ -152,16 +146,29 @@ export function RunDetail({
             </div>
           </div>
 
-          {detail.pending_approval && (
+          {/* 9. Logs */}
+          <div className="subsection">
+            <h3>Logs</h3>
+            <LiveLogPanel runId={detail.id} runStatus={detail.status} onTerminal={onChanged} />
+          </div>
+
+          {/* Locks + Queue (supporting context) */}
+          <div className="detail-grid">
             <div className="subsection">
-              <h3>Approval</h3>
-              <ApprovalPanel
-                runId={detail.id}
-                approval={detail.pending_approval}
-                onResolved={onChanged}
-              />
+              <h3>Locks</h3>
+              <LockPanel runId={detail.id} refreshKey={artifactRefresh} />
             </div>
-          )}
+            <div className="subsection">
+              <h3>Queue</h3>
+              <QueuePanel runId={detail.id} refreshKey={artifactRefresh} onChanged={onChanged} />
+            </div>
+          </div>
+
+          {/* 10. Cancellation */}
+          <div className="subsection">
+            <h3>Cancellation</h3>
+            <CancelPanel run={detail} onCancelled={onChanged} />
+          </div>
         </div>
       )}
     </Section>

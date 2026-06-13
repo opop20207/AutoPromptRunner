@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { api, errorMessage } from "../api/client";
 import { CANCELLABLE_RUN_STATUSES, type RunDetail } from "../types";
+import { StatusBadge } from "./StatusBadge";
 
 // Cancels a run (queued / running / waiting) with an optional reason and a confirmation,
 // then reloads the run detail and list. Shows the current cancellation status if present.
@@ -31,7 +32,7 @@ export function CancelPanel({ run, onCancelled }: { run: RunDetail; onCancelled:
     <div>
       {run.cancellation_status && (
         <p className="muted">
-          Cancellation: <span className="status">{run.cancellation_status}</span>
+          Cancellation: <StatusBadge status={run.cancellation_status} />
           {run.cancellation_reason ? ` — ${run.cancellation_reason}` : ""}
         </p>
       )}

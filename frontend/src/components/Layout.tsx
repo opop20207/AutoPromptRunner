@@ -1,13 +1,25 @@
 import type { ReactNode } from "react";
 
-export function Layout({ apiBase, children }: { apiBase: string; children: ReactNode }) {
+export function Layout({
+  apiBase,
+  sidebar,
+  children,
+}: {
+  apiBase: string;
+  sidebar?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <div className="app">
       <header className="app-header">
         <h1>AutoPromptRunner</h1>
         <span className="api-base">API: {apiBase}</span>
+        <span className="app-tag">local-first · unauthenticated</span>
       </header>
-      <main className="app-main">{children}</main>
+      <div className="app-body">
+        {sidebar && <aside className="sidebar">{sidebar}</aside>}
+        <main className="app-main">{children}</main>
+      </div>
     </div>
   );
 }

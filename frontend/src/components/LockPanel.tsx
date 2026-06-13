@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
 import type { RunLock } from "../types";
+import { StatusBadge } from "./StatusBadge";
 
 // Shows workspace execution locks. When `runId` is given, the current run's lock row is
 // highlighted. ACTIVE locks can be released manually (with a confirmation) as an escape
@@ -63,7 +64,7 @@ export function LockPanel({ runId, refreshKey }: { runId?: number; refreshKey?: 
               <tr key={lock.id} className={runId && lock.run_id === runId ? "selected" : undefined}>
                 <td>#{lock.run_id}</td>
                 <td>
-                  <span className="status">{lock.status}</span>
+                  <StatusBadge status={lock.status} />
                 </td>
                 <td className="mono">{lock.expires_at ?? "—"}</td>
                 <td className="mono">{lock.workspace_path}</td>

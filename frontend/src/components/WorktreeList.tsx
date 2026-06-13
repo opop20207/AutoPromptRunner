@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api/client";
 import type { Worktree } from "../types";
 import { Section } from "./Layout";
+import { StatusBadge } from "./StatusBadge";
 
 export function WorktreeList({
   refreshKey,
@@ -92,7 +93,7 @@ export function WorktreeList({
                 <td>{wt.name}</td>
                 <td className="mono">{wt.branch}</td>
                 <td>
-                  <span className="status">{wt.status}</span>
+                  <StatusBadge status={wt.status} />
                 </td>
                 <td className="mono">{wt.path}</td>
                 <td>
