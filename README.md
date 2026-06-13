@@ -13,6 +13,57 @@ records what changed. Three providers are available: `mock` (offline, determinis
 has no third-party runtime dependencies (standard library only); an optional FastAPI
 HTTP backend is available via the `api` extra.
 
+This is the **v0.1 MVP**: a stable, local-first end-to-end tool. See the section index
+above (or scroll) for the full feature tour; each capability has its own section below.
+
+## v0.1 capabilities
+
+- Local-first execution (no remote service required)
+- CLI, optional FastAPI backend, and a React/Vite frontend
+- SQLite persistence of projects, runs, steps, approvals, and artifacts
+- Providers: `mock` (offline), `claude-code`, and `codex`
+- Project profiles and reusable prompt templates
+- Bounded prompt loop with an approval gate
+- Read-only Git artifact capture (status / diff / changed files)
+- Git worktree parallel sessions and workspace execution locks
+- Local run queue with a background worker, and run cancellation
+- Config file + environment overrides
+- Safety checks (blocked commands, secret-file warnings, hard limits)
+
+## Not supported yet (post-v0.1)
+
+- Authentication and multi-user deployment
+- Distributed workers or a hosted/cloud service
+- WebSocket / SSE live streaming (run logs use polling)
+- Cloud sync and browser automation
+- Guaranteed process cancellation across machine restarts
+- Full provider-specific advanced options
+
+## Install and setup
+
+```
+git clone https://github.com/opop20207/AutoPromptRunner.git
+cd AutoPromptRunner
+pip install -e ".[dev]"          # CLI + FastAPI backend + test client
+```
+
+The CLI core needs no third-party packages; the `[dev]` (or `[api]`) extra adds FastAPI for
+the HTTP backend. Then:
+
+```
+python -m autoprompt_runner.cli init-db                 # create the local SQLite database
+python -m autoprompt_runner.cli config init             # optional: write .autoprompt/config.toml
+python -m autoprompt_runner.cli template seed           # add the built-in prompt templates
+python -m autoprompt_runner.cli project add --name demo --repo-path . --provider mock
+python -m autoprompt_runner.cli run --project demo --prompt "Review this project" --max-loops 3
+python -m autoprompt_runner.cli approve-next --run-id 1 # or: reject-next --run-id 1
+```
+
+Convenience dev scripts (bash) live in [`scripts/`](scripts): `dev_api.sh` (start the API),
+`dev_worker.sh` (start the worker), `dev_frontend.sh` (start the Vite dev server), and
+`check_all.sh` (run backend tests, config validation, and the frontend build -- safe
+commands only; it never invokes Claude Code, Codex, or any external AI tool).
+
 ## MVP Workflow
 
 ```
@@ -721,12 +772,46 @@ character). True streaming (SSE or WebSocket) is planned for a future step.
 
 ## Tests
 
-Standard library only; the Claude Code subprocess is faked and Git artifacts use
-temporary repositories, so no real `claude` is needed:
+Standard library only; the Claude Code / Codex subprocesses are faked and Git artifacts
+use temporary repositories, so **no real `claude` or `codex` is needed** and no network is
+used (the FastAPI tests run in-process via the test client). End-to-end flows are covered
+by `tests/test_e2e_cli_flow.py` and `tests/test_e2e_api_flow.py`.
 
 ```
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -v     # or: python -m pytest
+scripts/check_all.sh                        # tests + config validate + frontend build
 ```
+
+## Troubleshooting
+
+- **`ModuleNotFoundError: fastapi`** -> install the API extra: `pip install -e ".[api]"`
+  (the CLI core itself needs no third-party packages).
+- **`config validate` fails** -> run `config show` to see the effective values; common
+  causes are `max_loops`/`timeout_seconds` above their hard limits or an empty `db_path`.
+- **`run` says the provider is unsupported** -> use `mock`, `claude-code`, or `codex`.
+- **`claude-code` / `codex` runs end FAILED with "command not found"** -> the CLI is not
+  installed or not on `PATH`; AutoPromptRunner never installs it and never handles keys.
+- **A run is `WAITING_APPROVAL` and nothing happens** -> approve or reject it
+  (`approve-next` / `reject-next`, or the run detail in the web UI).
+- **`POST /runs` returns `409`** -> the workspace is locked by another active run; use a
+  separate Git worktree for parallel sessions, or release a stale lock (`locks release`).
+- **A queued run never executes** -> start a worker (`worker run`); queued runs do nothing
+  until a worker claims them.
+- **Frontend cannot reach the API** -> start the backend and/or set `VITE_API_BASE_URL`.
+
+## v0.1 checklist
+
+- [x] CLI works (init-db, project/template/run/approve/reject/list/show/artifacts/safety-check)
+- [x] SQLite persistence
+- [x] MockRunner works; ClaudeCodeRunner / CodexRunner fail safely when the CLI is absent
+- [x] Prompt loop and approval gate
+- [x] Git artifact capture and the safety checks
+- [x] Project profiles and prompt templates
+- [x] Git worktrees and workspace locks
+- [x] Local queue + background worker, and run cancellation
+- [x] Config file / environment overrides (`config show` / `validate` / `init`)
+- [x] FastAPI backend and the React/Vite frontend build
+- [x] End-to-end CLI and API flow tests pass
 
 ## Project Documents
 

@@ -22,6 +22,11 @@ Run a configured prompt against a target agent, evaluate the result, and optiona
 - Read existing code and configuration before modifying it.
 - Keep changes scoped to the stated task; surface unrelated issues in the final report instead of acting on them.
 
+## Stabilization Rules
+
+- During a stabilization / validation pass, do not add major new features, redesign the architecture, or change provider behavior. Limit changes to fixing bugs, failing tests, import/type/schema mismatches, broken CLI/API integration, documentation inaccuracies, and small compatibility issues introduced by earlier work.
+- Prefer validating and documenting existing behavior over extending it; keep the backend tests green and the frontend build passing before and after the pass.
+
 ## Safety Rules
 
 - Default to an approval gate before executing generated next prompts. The user confirms before any generated follow-up prompt runs.

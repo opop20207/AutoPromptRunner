@@ -232,3 +232,35 @@ Generation logic:
 - **Additional runner providers** — complete `CodexRunner` and `ShellRunner`, and add further agent integrations behind the same interface.
 - **Parallel runs** — execute multiple runs (and eventually independent steps) concurrently with appropriate scheduling.
 - **Persistence and observability improvements** — richer history, structured metrics, tracing of step timing and provider behavior, and a database beyond SQLite for higher concurrency.
+
+## v0.1 Status
+
+AutoPromptRunner has reached its **v0.1 MVP**: a stable, local-first, end-to-end tool. The
+parts of the roadmap above that are now delivered are listed below; the rest is post-v0.1.
+
+### Completed MVP capabilities
+
+- CLI-first orchestration with SQLite persistence (projects, runs, steps, approvals, artifacts).
+- Providers: `MockRunner`, `ClaudeCodeRunner`, and `CodexRunner` (subprocess; fail safely when the CLI is absent).
+- Bounded prompt loop, rule-based next-prompt generation, and the approval gate.
+- Read-only Git artifact capture and the safety checks (blocked commands, secret-file warnings, hard limits).
+- Project profiles and reusable prompt templates.
+- Git worktree parallel sessions and one-active-lock-per-workspace execution locks.
+- A local SQLite-backed run queue with a single background worker, and run cancellation.
+- Centralized configuration (TOML file + `AUTOPROMPT_*` environment overrides).
+- A FastAPI HTTP backend and a React/Vite frontend, both covered by end-to-end flow tests.
+
+### Remaining post-v0.1 roadmap
+
+- Authentication and multi-user / hosted deployment.
+- Distributed workers and concurrency beyond one local worker.
+- True live streaming of run logs (SSE / WebSocket) -- currently polling only.
+- Queue retries/backoff, structured logging, metrics, and richer observability.
+- A database beyond SQLite for higher concurrency; cloud sync.
+
+### Known limitations
+
+- Process cancellation of a *running* external agent is best-effort and local to the worker
+  process; it is not guaranteed across machine restarts or from a different process.
+- Run logs update per completed step (polling), not character-by-character.
+- No authentication: the API and database are intended for local, single-user use.
