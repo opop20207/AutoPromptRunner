@@ -1,9 +1,9 @@
 """SQLite persistence for AutoPromptRunner.
 
 A thin data-access layer over the Python standard-library ``sqlite3`` module. It
-stores project profiles, runs, steps, approvals, and a small settings table (for the
-default project) so state survives across CLI invocations. All state stays on the
-local machine (see AGENTS.md, "Logging Rules"). No third-party packages are used.
+stores project profiles, runs, steps, approvals, artifacts, and a small settings table
+(for the default project) so state survives across CLI invocations. All state stays on
+the local machine (see AGENTS.md, "Logging Rules"). No third-party packages are used.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from .approvals import ApprovalStatus
-from .models import Approval, Project, StoredRun, StoredStep
+from .models import Approval, Artifact, Project, StoredRun, StoredStep
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
 # Default database location, relative to the current working directory.
@@ -81,6 +81,18 @@ CREATE TABLE IF NOT EXISTS approvals (
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     decided_at TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs (id),
+    FOREIGN KEY (step_id) REFERENCES steps (id)
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    step_id INTEGER,
+    type TEXT NOT NULL,
+    content TEXT,
+    path TEXT,
+    created_at TEXT NOT NULL,
     FOREIGN KEY (run_id) REFERENCES runs (id),
     FOREIGN KEY (step_id) REFERENCES steps (id)
 );
@@ -562,6 +574,75 @@ def list_approvals_for_run(db_path: str, run_id: int) -> List[Approval]:
         conn.close()
 
 
+# -- artifacts ---------------------------------------------------------------
+
+
+def create_artifact(
+    db_path: str,
+    run_id: int,
+    artifact_type: str,
+    content: Optional[str] = None,
+    step_id: Optional[int] = None,
+    path: Optional[str] = None,
+) -> int:
+    """Insert an artifact and return its id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "INSERT INTO artifacts (run_id, step_id, type, content, path, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, step_id, artifact_type, content, path, _utcnow_iso()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_artifacts_for_run(db_path: str, run_id: int, artifact_type: Optional[str] = None) -> List[Artifact]:
+    """Return artifacts for ``run_id`` (optionally filtered by type), ordered by id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        if artifact_type is None:
+            rows = conn.execute(
+                "SELECT * FROM artifacts WHERE run_id = ? ORDER BY id ASC", (run_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM artifacts WHERE run_id = ? AND type = ? ORDER BY id ASC",
+                (run_id, artifact_type),
+            ).fetchall()
+        return [_row_to_artifact(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_artifacts_for_step(db_path: str, step_id: int) -> List[Artifact]:
+    """Return artifacts for ``step_id`` ordered by id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM artifacts WHERE step_id = ? ORDER BY id ASC", (step_id,)
+        ).fetchall()
+        return [_row_to_artifact(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_artifact(db_path: str, artifact_id: int) -> Optional[Artifact]:
+    """Return the artifact with ``artifact_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        return _row_to_artifact(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 # -- row mappers -------------------------------------------------------------
 
 
@@ -620,4 +701,16 @@ def _row_to_approval(row: sqlite3.Row) -> Approval:
         status=row["status"],
         created_at=row["created_at"],
         decided_at=row["decided_at"],
+    )
+
+
+def _row_to_artifact(row: sqlite3.Row) -> Artifact:
+    return Artifact(
+        id=row["id"],
+        run_id=row["run_id"],
+        step_id=row["step_id"],
+        type=row["type"],
+        content=row["content"],
+        path=row["path"],
+        created_at=row["created_at"],
     )

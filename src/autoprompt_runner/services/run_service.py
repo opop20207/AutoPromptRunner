@@ -5,9 +5,14 @@ persists each step, generates the next prompt, and gates execution behind an app
 when required. It enforces ``max_loops`` and never loops without a bound, satisfying
 the AGENTS.md "Prompt Loop Rules".
 
+Around each step it records artifacts: the read-only Git state before/after the step
+(status, diff, diff stat, changed files) when the workspace is a Git repository, plus
+the runner's stdout/stderr. A non-Git or missing workspace never fails the run; Git
+artifacts are skipped and a compact warning artifact is recorded instead. Git capture
+logic lives in :mod:`artifacts` / :mod:`git_utils`; this service only orchestrates it.
+
 Providers are resolved through a factory map (name -> factory(workspace,
-timeout_seconds) -> AgentRunner), so provider-specific construction stays isolated and
-no subprocess logic leaks into the service.
+timeout_seconds) -> AgentRunner), so provider-specific construction stays isolated.
 
 Loop policy:
 * require_approval = True  -> a single step runs per call; the run then pauses at
@@ -19,7 +24,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Optional
 
-from .. import storage
+from .. import artifacts, storage
 from ..models import AgentResult, StepExecutionReport
 from ..runners import AgentRunner, ClaudeCodeRunner, MockRunner
 from ..state import RunStatus
@@ -29,6 +34,7 @@ from .prompt_generator import PromptGenerator
 ProviderFactory = Callable[[Optional[str], Optional[int]], AgentRunner]
 
 _DEFAULT_TIMEOUT_SECONDS = 1800
+_GIT_SKIPPED_REASON = "workspace missing or not a git repository; git artifacts skipped"
 
 
 def _mock_factory(workspace: Optional[str], timeout_seconds: Optional[int]) -> AgentRunner:
@@ -54,7 +60,7 @@ class RunServiceError(Exception):
 
 
 class RunService:
-    """Coordinates runners, storage, prompt generation, and the approval gate."""
+    """Coordinates runners, storage, prompt generation, the approval gate, and artifacts."""
 
     def __init__(
         self,
@@ -173,8 +179,11 @@ class RunService:
 
         The loop is bounded: it runs at most until ``max_loops`` is reached, stops on a
         failed step, and -- when approval is required -- returns after a single step.
+        Each executed step records Git (when applicable) and runner artifacts.
         """
         while True:
+            git_capture = artifacts.workspace_is_git(workspace)
+            status_before = artifacts.capture_git_status(workspace) if git_capture else None
             runner = self._make_runner(provider, workspace, timeout_seconds)
             result = runner.run(prompt)
             loops_done = loop_index + 1
@@ -184,6 +193,7 @@ class RunService:
                     root_prompt, prompt, result.stdout, result.stderr, result.exit_code, loop_index
                 )
                 step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.FAILED.value, nxt.prompt)
+                self._capture_artifacts(run_id, step_id, workspace, git_capture, status_before, result)
                 storage.update_run_status(
                     self.db_path, run_id, RunStatus.FAILED.value, finished_at=result.finished_at
                 )
@@ -195,6 +205,7 @@ class RunService:
 
             if loops_done >= max_loops:
                 step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.DONE.value, None)
+                self._capture_artifacts(run_id, step_id, workspace, git_capture, status_before, result)
                 storage.update_run_status(
                     self.db_path, run_id, RunStatus.DONE.value, finished_at=result.finished_at
                 )
@@ -207,6 +218,7 @@ class RunService:
                 root_prompt, prompt, result.stdout, result.stderr, result.exit_code, loop_index
             )
             step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.DONE.value, nxt.prompt)
+            self._capture_artifacts(run_id, step_id, workspace, git_capture, status_before, result)
 
             if require_approval:
                 approval_id = storage.create_approval(self.db_path, run_id, step_id, nxt.prompt)
@@ -220,6 +232,31 @@ class RunService:
             # Auto-run: advance to the next step with the generated prompt.
             loop_index += 1
             prompt = nxt.prompt
+
+    def _capture_artifacts(
+        self,
+        run_id: int,
+        step_id: int,
+        workspace: Optional[str],
+        git_capture: bool,
+        status_before: Optional[str],
+        result: AgentResult,
+    ) -> None:
+        """Record Git (read-only) and runner artifacts for a completed step."""
+        if git_capture and workspace is not None:
+            status_after = artifacts.capture_git_status(workspace)
+            payloads = artifacts.collect_post_step_git_artifacts(workspace, status_before or "", status_after)
+        else:
+            payloads = [artifacts.git_skipped_artifact(_GIT_SKIPPED_REASON)]
+        payloads.extend(artifacts.runner_output_artifacts(result.stdout, result.stderr))
+        for payload in payloads:
+            storage.create_artifact(
+                self.db_path,
+                run_id=run_id,
+                artifact_type=payload.type,
+                content=payload.content,
+                step_id=step_id,
+            )
 
     def _persist_step(
         self,

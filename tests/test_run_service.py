@@ -1,12 +1,13 @@
-"""Tests for the RunService prompt-loop orchestration and approval gate.
+"""Tests for the RunService prompt-loop orchestration, approval gate, and artifacts.
 
-Standard-library only (unittest + tempfile). Runnable via:
+Standard-library only (unittest + tempfile + subprocess). Runnable via:
     python -m unittest discover -s tests -v
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -108,6 +109,53 @@ class RunServiceTests(unittest.TestCase):
     def test_approve_missing_run_raises(self):
         with self.assertRaises(RunServiceError):
             self._service().approve_and_continue(999)
+
+
+class GitArtifactCaptureTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _init_git_repo(self):
+        repo = os.path.join(self._tmp.name, "repo")
+        os.makedirs(repo)
+        subprocess.run(
+            ["git", "-c", "user.email=t@example.com", "-c", "user.name=test", "init", "-q"],
+            cwd=repo, capture_output=True, text=True,
+        )
+        return repo
+
+    def _types(self, run_id):
+        return {a.type for a in storage.list_artifacts_for_run(self.db, run_id)}
+
+    def test_stores_git_artifacts_when_workspace_is_git_repo(self):
+        repo = self._init_git_repo()
+        report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False, workspace=repo)
+        types = self._types(report.run_id)
+        for expected in (
+            "git_status_before", "git_status_after", "git_diff",
+            "git_diff_stat", "changed_files", "runner_stdout", "runner_stderr",
+        ):
+            self.assertIn(expected, types)
+        self.assertNotIn("git_skipped", types)
+
+    def test_skips_git_artifacts_when_workspace_is_none(self):
+        report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False, workspace=None)
+        types = self._types(report.run_id)
+        self.assertEqual(report.run_status, RunStatus.DONE.value)  # not failed
+        self.assertIn("git_skipped", types)
+        self.assertIn("runner_stdout", types)
+        self.assertNotIn("git_status_before", types)
+
+    def test_non_git_workspace_does_not_fail_run(self):
+        plain = os.path.join(self._tmp.name, "plain")
+        os.makedirs(plain)
+        report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False, workspace=plain)
+        self.assertEqual(report.run_status, RunStatus.DONE.value)
+        self.assertIn("git_skipped", self._types(report.run_id))
 
 
 if __name__ == "__main__":

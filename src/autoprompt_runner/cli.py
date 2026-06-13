@@ -2,22 +2,22 @@
 
 CLI-first entry point (see PROJECT.md). Commands:
 
-* ``version``      -- print the package version.
-* ``init-db``      -- create the local SQLite database.
-* ``project``      -- manage project profiles (add / list / show / set-default / delete).
-* ``run``          -- start a run; execute the first step, generate the next prompt,
+* ``version``        -- print the package version.
+* ``init-db``        -- create the local SQLite database.
+* ``project``        -- manage project profiles (add / list / show / set-default / delete).
+* ``run``            -- start a run; execute the first step, generate the next prompt,
   and pause at a pending approval (default) or auto-run up to ``--max-loops``.
-* ``approve-next`` -- approve a run's pending next prompt and execute it.
-* ``reject-next``  -- reject a run's pending next prompt and stop the run.
-* ``list-runs``    -- list recent runs.
-* ``show-run``     -- show one run, its steps, and any pending approval.
+* ``approve-next``   -- approve a run's pending next prompt and execute it.
+* ``reject-next``    -- reject a run's pending next prompt and stop the run.
+* ``list-runs``      -- list recent runs.
+* ``show-run``       -- show one run, its steps (with changed files / diff stat), and
+  any pending approval.
+* ``show-artifacts`` -- list a run's captured artifacts (Git state + runner output).
+* ``show-artifact``  -- print one artifact's full content.
 
-A project profile stores reusable run settings (repo path, provider, limits) so they
-need not be passed on every run. ``run`` resolves settings with precedence: explicit
-flags > selected ``--project`` > default project > built-in defaults.
-
-Providers: ``mock`` (offline, default) and ``claude-code`` (the Claude Code CLI). The
-Codex runner and a web UI are not implemented yet.
+A project profile stores reusable run settings; ``run`` resolves settings with
+precedence: explicit flags > selected ``--project`` > default project > built-in
+defaults. Providers: ``mock`` (offline, default) and ``claude-code``.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import sys
 from typing import Optional, Sequence
 
 from . import __version__, storage
+from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .projects import resolve_run_settings
 from .services.run_service import DEFAULT_PROVIDER_FACTORIES, RunService, RunServiceError
@@ -116,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser("show-run", help="Show one run, its steps, and pending approval.")
     show_parser.add_argument("--id", dest="run_id", type=int, required=True, help="Run id to show.")
     _add_db_path(show_parser)
+
+    artifacts_parser = subparsers.add_parser("show-artifacts", help="List a run's artifacts.")
+    artifacts_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    artifacts_parser.add_argument("--type", dest="type", default=None, help="Filter by artifact type.")
+    _add_db_path(artifacts_parser)
+
+    artifact_parser = subparsers.add_parser("show-artifact", help="Print one artifact's full content.")
+    artifact_parser.add_argument("--id", dest="artifact_id", type=int, required=True, help="Artifact id.")
+    _add_db_path(artifact_parser)
 
     return parser
 
@@ -419,6 +429,7 @@ def cmd_show_run(args: argparse.Namespace) -> int:
             print(f"      stderr     : {_shorten(step.stderr, 80)}")
         if step.next_prompt:
             print(f"      next_prompt: {_shorten(step.next_prompt, 80)}")
+        _print_step_git_summary(db_path, step.id)
 
     if pending is not None:
         print("Pending approval:")
@@ -433,7 +444,52 @@ def cmd_show_run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_show_artifacts(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    items = storage.list_artifacts_for_run(db_path, args.run_id, artifact_type=args.type)
+    if not items:
+        suffix = f" of type '{args.type}'" if args.type else ""
+        print(f"No artifacts{suffix} for run {args.run_id}.")
+        return EXIT_OK
+    print(f"{'ID':>4}  {'STEP':>4}  {'TYPE':<18}  {'CREATED_AT':<32}  PREVIEW")
+    for item in items:
+        step = str(item.step_id) if item.step_id is not None else "-"
+        preview = _shorten(item.content, 50) if item.content else ""
+        print(f"{item.id:>4}  {step:>4}  {item.type:<18}  {(item.created_at or ''):<32}  {preview}")
+    return EXIT_OK
+
+
+def cmd_show_artifact(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    artifact = storage.get_artifact(db_path, args.artifact_id)
+    if artifact is None:
+        print(f"error: artifact {args.artifact_id} not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    step = artifact.step_id if artifact.step_id is not None else "(none)"
+    print(f"Artifact #{artifact.id} (run {artifact.run_id}, step {step}, type {artifact.type})")
+    print(f"  created_at: {artifact.created_at}")
+    if artifact.path:
+        print(f"  path      : {artifact.path}")
+    print("---")
+    print(artifact.content if artifact.content is not None else "")
+    return EXIT_OK
+
+
 # -- helpers -----------------------------------------------------------------
+
+
+def _print_step_git_summary(db_path: str, step_id: int) -> None:
+    """Print compact changed-files and diff-stat lines for a step, if captured."""
+    by_type = {a.type: a for a in storage.list_artifacts_for_step(db_path, step_id)}
+    changed = by_type.get(ArtifactType.CHANGED_FILES.value)
+    if changed is not None and changed.content and changed.content.strip():
+        files = ", ".join(changed.content.splitlines())
+        print(f"      changed    : {_shorten(files, 80)}")
+    diff_stat = by_type.get(ArtifactType.GIT_DIFF_STAT.value)
+    if diff_stat is not None and diff_stat.content and diff_stat.content.strip():
+        summary_lines = [line for line in diff_stat.content.splitlines() if line.strip()]
+        if summary_lines:
+            print(f"      diffstat   : {_shorten(summary_lines[-1].strip(), 80)}")
 
 
 def _exit_code_for(report: StepExecutionReport) -> int:
@@ -505,6 +561,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_list_runs(args)
     if args.command == "show-run":
         return cmd_show_run(args)
+    if args.command == "show-artifacts":
+        return cmd_show_artifacts(args)
+    if args.command == "show-artifact":
+        return cmd_show_artifact(args)
 
     parser.print_help(sys.stderr)
     return EXIT_USAGE

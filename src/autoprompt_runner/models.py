@@ -134,6 +134,24 @@ class Approval:
 
 
 @dataclass
+class Artifact:
+    """An artifact row as persisted in the ``artifacts`` table.
+
+    Records a piece of a step's context: the read-only Git state around the step
+    (status/diff/changed files) or the runner's stdout/stderr. ``content`` holds inline
+    text; ``path`` is reserved for artifacts stored on disk (unused for now).
+    """
+
+    id: int
+    run_id: int
+    step_id: Optional[int]
+    type: str
+    content: Optional[str]
+    path: Optional[str]
+    created_at: str
+
+
+@dataclass
 class NextPrompt:
     """A generated next prompt and how it was derived.
 
