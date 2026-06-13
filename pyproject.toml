@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoprompt-runner"
+dynamic = ["version"]
+description = "Local-first prompt orchestration tool that drives coding-agent CLIs through a bounded, approval-gated prompt loop."
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["cli", "prompt", "orchestration", "coding-agent", "automation"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+]
+
+# No third-party runtime dependencies: standard library only.
+dependencies = []
+
+# pytest is declared as a development extra but is NOT installed by this step.
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+autoprompt-runner = "autoprompt_runner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "autoprompt_runner.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
