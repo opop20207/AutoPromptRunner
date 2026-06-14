@@ -21,6 +21,9 @@ class HealthConfig(BaseModel):
     queue_poll_interval_seconds: float
     max_loops_hard_limit: int
     timeout_seconds_hard_limit: int
+    # Whether API auth is enabled (so a client knows to send a token). The token itself is
+    # never included in this (or any) response.
+    auth_enabled: bool = False
 
 
 class HealthResponse(BaseModel):
@@ -41,5 +44,6 @@ def health() -> HealthResponse:
             queue_poll_interval_seconds=settings.queue.poll_interval_seconds,
             max_loops_hard_limit=settings.safety.max_loops_hard_limit,
             timeout_seconds_hard_limit=settings.safety.timeout_seconds_hard_limit,
+            auth_enabled=settings.auth.enabled,
         ),
     )

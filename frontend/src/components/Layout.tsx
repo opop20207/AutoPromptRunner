@@ -3,10 +3,12 @@ import type { ReactNode } from "react";
 export function Layout({
   apiBase,
   sidebar,
+  authControl,
   children,
 }: {
   apiBase: string;
   sidebar?: ReactNode;
+  authControl?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -14,7 +16,8 @@ export function Layout({
       <header className="app-header">
         <h1>AutoPromptRunner</h1>
         <span className="api-base">API: {apiBase}</span>
-        <span className="app-tag">local-first · unauthenticated</span>
+        <span className="app-tag">local-first</span>
+        {authControl}
       </header>
       <div className="app-body">
         {sidebar && <aside className="sidebar">{sidebar}</aside>}

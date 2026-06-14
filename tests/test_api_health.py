@@ -40,11 +40,22 @@ class HealthApiTests(unittest.TestCase):
             "queue_poll_interval_seconds",
             "max_loops_hard_limit",
             "timeout_seconds_hard_limit",
+            "auth_enabled",
         ):
             self.assertIn(key, config)
         # No environment dumps / secrets in the metadata.
         self.assertNotIn("env", config)
+        self.assertNotIn("api_token", config)
         self.assertFalse(any("secret" in str(k).lower() for k in config))
+
+    def test_health_auth_enabled_flag_false_by_default(self):
+        from autoprompt_runner.api.app import app
+
+        # With auth disabled (the default), the flag is false and no token is exposed.
+        for name in ("AUTOPROMPT_AUTH_ENABLED", "AUTOPROMPT_API_TOKEN"):
+            os.environ.pop(name, None)
+        resp = TestClient(app).get("/health")
+        self.assertFalse(resp.json()["config"]["auth_enabled"])
 
 
 if __name__ == "__main__":

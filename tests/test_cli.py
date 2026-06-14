@@ -1000,5 +1000,39 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(code, 2)  # EXIT_USAGE
 
 
+class AuthCliTests(unittest.TestCase):
+    _ENV = ("AUTOPROMPT_AUTH_ENABLED", "AUTOPROMPT_API_TOKEN")
+
+    def setUp(self):
+        for name in self._ENV:
+            os.environ.pop(name, None)
+
+    def tearDown(self):
+        for name in self._ENV:
+            os.environ.pop(name, None)
+
+    def test_auth_token_generate(self):
+        code, out, err = run_cli(["auth", "token", "generate"])
+        self.assertEqual(code, 0, err)
+        token = out.strip()
+        self.assertGreaterEqual(len(token), 32)
+        self.assertNotIn(" ", token)
+
+    def test_config_validate_fails_when_auth_enabled_without_token(self):
+        os.environ["AUTOPROMPT_AUTH_ENABLED"] = "true"
+        os.environ["AUTOPROMPT_API_TOKEN"] = ""
+        code, out, err = run_cli(["config", "validate"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("api_token", err)
+
+    def test_config_show_redacts_token(self):
+        os.environ["AUTOPROMPT_AUTH_ENABLED"] = "true"
+        os.environ["AUTOPROMPT_API_TOKEN"] = "supersecret-value"
+        code, out, err = run_cli(["config", "show"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("(set, redacted)", out)
+        self.assertNotIn("supersecret-value", out)
+
+
 if __name__ == "__main__":
     unittest.main()

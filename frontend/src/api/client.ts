@@ -37,7 +37,39 @@ import type {
   WorktreeCreate,
 } from "../types";
 
+import { API_TOKEN_STORAGE_KEY } from "../types";
+
 const BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+
+// Optional API token (local-first auth). Stored only in the browser's localStorage and
+// attached as `Authorization: Bearer <token>` to API requests below. Never logged.
+export function getToken(): string {
+  try {
+    return localStorage.getItem(API_TOKEN_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setToken(token: string): void {
+  try {
+    localStorage.setItem(API_TOKEN_STORAGE_KEY, token.trim());
+  } catch {
+    // localStorage unavailable (e.g. private mode); ignore.
+  }
+}
+
+export function clearToken(): void {
+  try {
+    localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function hasToken(): boolean {
+  return getToken().length > 0;
+}
 
 function queryString(params: Record<string, string | number | boolean | undefined | null>): string {
   const qs = new URLSearchParams();
@@ -58,12 +90,17 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  // Merge headers: content type, the optional bearer token, then any caller headers. The
+  // token is only ever sent to BASE_URL (the API) -- every request goes through here.
+  const token = getToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...((options?.headers as Record<string, string>) ?? {}),
+  };
   let resp: Response;
   try {
-    resp = await fetch(`${BASE_URL}${path}`, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
-    });
+    resp = await fetch(`${BASE_URL}${path}`, { ...options, headers });
   } catch {
     throw new ApiError(0, `Cannot reach the backend at ${BASE_URL}. Is the API running?`);
   }
@@ -77,6 +114,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       }
     } catch {
       // Non-JSON error body; keep the status-line detail.
+    }
+    if (resp.status === 401) {
+      detail = "Unauthorized (401) — enter a valid API token in the Auth control, or disable auth on the backend.";
     }
     throw new ApiError(resp.status, detail);
   }

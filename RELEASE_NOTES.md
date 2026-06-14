@@ -90,6 +90,17 @@ python -m autoprompt_runner.cli show-artifacts --run-id 1
   a real repository with `claude-code` or `codex`.
 - Run `scripts/check_all.sh` before relying on a local build, and `scripts/doctor.sh` to
   diagnose a new machine.
-- Post-v0.1 candidates: a CI workflow, optional auth for shared use, true log streaming
-  (SSE/WebSocket), retries/backoff for the queue, and richer metrics — see
-  [PROJECT.md](PROJECT.md) for the roadmap.
+- Post-v0.1 candidates: a CI workflow, true log streaming (SSE/WebSocket), retries/backoff
+  for the queue, and richer metrics — see [PROJECT.md](PROJECT.md) for the roadmap.
+
+## Post-v0.1 changes
+
+- **Optional local API token auth** (added after the v0.1.0 release candidate). The HTTP API
+  can require a single `Authorization: Bearer <token>`; it is **disabled by default** and the
+  API still binds to `127.0.0.1`, so local behavior is unchanged. Enable it (especially
+  before binding to a non-loopback address) via `AUTOPROMPT_AUTH_ENABLED` /
+  `AUTOPROMPT_API_TOKEN` or the `[auth]` config section; generate a token with
+  `autoprompt-runner auth token generate`. The token is never logged, printed by
+  `config show`, or returned by `/health`. The web UI has a compact header token control
+  (stored only in the browser). See "Local access protection" in the README. This is a single
+  shared token only — no user accounts, OAuth, or HTTPS management.

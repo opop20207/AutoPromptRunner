@@ -37,6 +37,12 @@ LARGE_DIFF_LINES_THRESHOLD = _APP.safety.large_diff_lines_threshold
 # directories. When set, runs may only use workspaces inside one of these roots.
 WORKSPACE_ALLOWLIST_ENV = "AUTOPROMPT_WORKSPACE_ALLOWLIST"
 
+# Optional API auth (see autoprompt_runner.auth / settings.AuthSettings). These env vars
+# override the [auth] config section. The token value is a secret and is never logged.
+AUTH_ENABLED_ENV = "AUTOPROMPT_AUTH_ENABLED"
+API_TOKEN_ENV = "AUTOPROMPT_API_TOKEN"  # noqa: S105 - this is the env var NAME, not a token
+ALLOW_UNAUTHENTICATED_HEALTH_ENV = "AUTOPROMPT_ALLOW_UNAUTHENTICATED_HEALTH"
+
 # Secret-like file name patterns (fnmatch against the file's basename). Only names
 # are inspected; file contents are never read.
 SECRET_FILE_PATTERNS = (

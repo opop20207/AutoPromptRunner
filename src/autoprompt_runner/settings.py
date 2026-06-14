@@ -76,6 +76,20 @@ class WorktreeSettings:
 
 
 @dataclass
+class AuthSettings:
+    """Optional single-token API auth (disabled by default for local development).
+
+    ``api_token`` is a secret -- it is never printed, logged, or returned by the API. When
+    ``enabled`` is true a valid ``Authorization: Bearer <token>`` header is required for the
+    protected route groups; ``allow_unauthenticated_health`` keeps ``/health`` public.
+    """
+
+    enabled: bool = False
+    api_token: str = ""
+    allow_unauthenticated_health: bool = True
+
+
+@dataclass
 class AppSettings:
     storage: StorageSettings = field(default_factory=StorageSettings)
     defaults: DefaultRunSettings = field(default_factory=DefaultRunSettings)
@@ -83,6 +97,7 @@ class AppSettings:
     queue: QueueSettings = field(default_factory=QueueSettings)
     api: ApiSettings = field(default_factory=ApiSettings)
     worktrees: WorktreeSettings = field(default_factory=WorktreeSettings)
+    auth: AuthSettings = field(default_factory=AuthSettings)
 
 
 def build_default_settings() -> AppSettings:
@@ -159,6 +174,14 @@ def _apply_toml(settings: AppSettings, data: Dict[str, Any]) -> None:
     if "base_dir" in worktrees:
         settings.worktrees.base_dir = str(worktrees["base_dir"])
 
+    auth = data.get("auth", {})
+    if "enabled" in auth:
+        settings.auth.enabled = bool(auth["enabled"])
+    if "api_token" in auth:
+        settings.auth.api_token = str(auth["api_token"])
+    if "allow_unauthenticated_health" in auth:
+        settings.auth.allow_unauthenticated_health = bool(auth["allow_unauthenticated_health"])
+
 
 # -- environment overrides --------------------------------------------------
 
@@ -188,6 +211,22 @@ def _env_float(name: str, current: float) -> float:
         raise SettingsError(f"{name} must be a number, got {raw!r}") from exc
 
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_bool(name: str, current: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return current
+    low = raw.strip().lower()
+    if low in _TRUE_VALUES:
+        return True
+    if low in _FALSE_VALUES:
+        return False
+    raise SettingsError(f"{name} must be a boolean (true/false), got {raw!r}")
+
+
 def _apply_env(settings: AppSettings) -> None:
     settings.storage.db_path = _env_str("AUTOPROMPT_DB_PATH", settings.storage.db_path)
     settings.defaults.provider = _env_str("AUTOPROMPT_DEFAULT_PROVIDER", settings.defaults.provider)
@@ -208,6 +247,11 @@ def _apply_env(settings: AppSettings) -> None:
     settings.api.host = _env_str("AUTOPROMPT_API_HOST", settings.api.host)
     settings.api.port = _env_int("AUTOPROMPT_API_PORT", settings.api.port)
     settings.worktrees.base_dir = _env_str("AUTOPROMPT_WORKTREE_BASE_DIR", settings.worktrees.base_dir)
+    settings.auth.enabled = _env_bool("AUTOPROMPT_AUTH_ENABLED", settings.auth.enabled)
+    settings.auth.api_token = _env_str("AUTOPROMPT_API_TOKEN", settings.auth.api_token)
+    settings.auth.allow_unauthenticated_health = _env_bool(
+        "AUTOPROMPT_ALLOW_UNAUTHENTICATED_HEALTH", settings.auth.allow_unauthenticated_health
+    )
 
 
 # -- public API -------------------------------------------------------------
@@ -250,6 +294,8 @@ def validate_settings(settings: AppSettings) -> None:
         raise SettingsError("queue.poll_interval_seconds must be > 0")
     if not (1 <= settings.api.port <= 65535):
         raise SettingsError("api.port must be between 1 and 65535")
+    if settings.auth.enabled and not (settings.auth.api_token or "").strip():
+        raise SettingsError("auth.enabled is true but auth.api_token is empty (set AUTOPROMPT_API_TOKEN or [auth] api_token)")
 
 
 def settings_to_dict(settings: AppSettings) -> Dict[str, Any]:

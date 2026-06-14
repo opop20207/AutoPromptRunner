@@ -1139,6 +1139,66 @@ model as `claude-code`. All Codex-specific CLI details are isolated inside `Code
   Point `--workspace` only at a project you intend Codex to change, ideally one tracked
   in version control.
 
+## Local access protection (optional API token auth)
+
+AutoPromptRunner can run real coding agents against local repositories, so even a local
+tool deserves protection against accidental network exposure. The HTTP API supports an
+**optional single bearer token**.
+
+- **Default is local-only and open.** The API binds to `127.0.0.1` and auth is **disabled**
+  by default, so local development is unchanged.
+- **> ⚠ If you bind the API to `0.0.0.0`** (or any non-loopback address), or otherwise expose
+  it on a network, **enable auth** — otherwise anyone who can reach the port can drive your
+  local agents and repositories.
+
+**Generate a token** (printed once; not saved automatically):
+
+```
+python -m autoprompt_runner.cli auth token generate
+```
+
+**Enable auth with environment variables:**
+
+```
+export AUTOPROMPT_AUTH_ENABLED=true
+export AUTOPROMPT_API_TOKEN='<paste the generated token>'
+# optional: require a token for /health too (default keeps it public)
+export AUTOPROMPT_ALLOW_UNAUTHENTICATED_HEALTH=false
+```
+
+**Or with the config file** (`[auth]` in `autoprompt.toml` / `.autoprompt/config.toml`):
+
+```toml
+[auth]
+enabled = true
+api_token = ""                       # prefer AUTOPROMPT_API_TOKEN over committing this
+allow_unauthenticated_health = true
+```
+
+`config validate` fails if `auth.enabled = true` but no token is set; `config show` prints
+`api_token = (set, redacted)` and **never** the value. The token is never logged or returned
+by `/health` (which only reports `auth_enabled`).
+
+**Using the API with auth on** — send the token as a bearer header:
+
+```
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8000/projects
+```
+
+A missing or invalid token returns `401`. Protected groups: `/projects`, `/runs`, `/queue`,
+`/locks`, `/templates`, `/worktrees`, `/providers`, `/search`, `/compare`, `/chains`,
+`/recovery`, `/export-import`. `/health` stays public unless
+`allow_unauthenticated_health = false`.
+
+**Frontend token setup** — the web UI header has a compact **token** control (🔒 / 🔓). Paste
+the token there; it is stored only in the browser's `localStorage`, attached as the
+`Authorization` header on API calls, and never displayed after saving or logged. Clear it
+with the same control. On a `401` the UI shows a clean message prompting you to enter a token.
+
+**Limitations.** Single shared token only — **no user accounts**, no OAuth, no HTTPS/TLS
+management (put a reverse proxy in front for TLS), and local-first by design. This is
+accidental-exposure protection, not a multi-user authorization system.
+
 ## HTTP API (FastAPI)
 
 An optional FastAPI backend exposes the same run/project operations over HTTP, using

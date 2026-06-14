@@ -11,10 +11,11 @@ services; no business logic is duplicated here.
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .. import __version__
+from .dependencies import require_api_auth, require_health_auth
 from .routes import (
     chains,
     compare,
@@ -32,8 +33,14 @@ from .routes import (
 app = FastAPI(
     title="AutoPromptRunner API",
     version=__version__,
-    description="Local-first prompt orchestration over HTTP (no auth, no websockets yet).",
+    description="Local-first prompt orchestration over HTTP (optional single-token auth; no websockets).",
 )
+
+# Optional single-token auth. The dependencies are no-ops when auth is disabled (the
+# default), so local development is unchanged; when enabled they require a valid
+# Authorization: Bearer <token> on the protected route groups (health stays public unless
+# auth.allow_unauthenticated_health is false).
+_protected = [Depends(require_api_auth)]
 
 # Permissive CORS so the local Vite dev frontend can call the API from the browser.
 # This is a local-only dev backend with no auth, and credentials are not used.
@@ -45,14 +52,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health.router)
-app.include_router(projects.router)
-app.include_router(runs.router)
-app.include_router(templates.router)
-app.include_router(worktrees.router)
-app.include_router(search.router)
-app.include_router(compare.router)
-app.include_router(chains.router)
-app.include_router(providers.router)
-app.include_router(recovery.router)
-app.include_router(export_import.router)
+app.include_router(health.router, dependencies=[Depends(require_health_auth)])
+app.include_router(projects.router, dependencies=_protected)
+app.include_router(runs.router, dependencies=_protected)
+app.include_router(templates.router, dependencies=_protected)
+app.include_router(worktrees.router, dependencies=_protected)
+app.include_router(search.router, dependencies=_protected)
+app.include_router(compare.router, dependencies=_protected)
+app.include_router(chains.router, dependencies=_protected)
+app.include_router(providers.router, dependencies=_protected)
+app.include_router(recovery.router, dependencies=_protected)
+app.include_router(export_import.router, dependencies=_protected)

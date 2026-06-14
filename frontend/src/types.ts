@@ -32,6 +32,10 @@ export interface Health {
   service: string;
 }
 
+// localStorage key for the optional API token. The token is stored only in the browser and
+// is sent solely on the Authorization header of API requests (never to any other URL).
+export const API_TOKEN_STORAGE_KEY = "autoprompt_api_token";
+
 export interface Project {
   id: number;
   name: string;

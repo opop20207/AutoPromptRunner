@@ -39,3 +39,16 @@ port = 8000
 [worktrees]
 # Base directory under which isolated Git worktrees are created.
 base_dir = ".autoprompt/worktrees"
+
+[auth]
+# Optional single-token API auth. Disabled by default for local development (the API binds
+# to 127.0.0.1). If you bind the API to a non-loopback address, set enabled = true and a
+# strong api_token (generate one with `autoprompt-runner auth token generate`).
+#
+# api_token is a SECRET and is the one exception to the "no secrets in this file" rule above:
+# prefer the AUTOPROMPT_API_TOKEN environment variable, and never commit a real token to
+# version control. When auth is enabled a valid `Authorization: Bearer <token>` is required
+# for the API; allow_unauthenticated_health keeps /health public.
+enabled = false
+api_token = ""
+allow_unauthenticated_health = true

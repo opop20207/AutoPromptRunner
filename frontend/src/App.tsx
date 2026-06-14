@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { api } from "./api/client";
+import { AuthPanel } from "./components/AuthPanel";
 import { Dashboard } from "./components/Dashboard";
 import { Layout, Section } from "./components/Layout";
 import { ProjectForm } from "./components/ProjectForm";
@@ -78,6 +79,7 @@ export default function App() {
   return (
     <Layout
       apiBase={api.base}
+      authControl={<AuthPanel />}
       sidebar={<Sidebar active={section} hasDetail={selectedRun !== null} onNavigate={setSection} />}
     >
       {section === "overview" && (

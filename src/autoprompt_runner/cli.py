@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, cancel, chains, compare, export_import, locks, providers, queue, recovery, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, auth, cancel, chains, compare, export_import, locks, providers, queue, recovery, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -101,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_provider_commands(subparsers)
     _add_recovery_commands(subparsers)
     _add_export_import_commands(subparsers)
+    _add_auth_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -359,6 +360,14 @@ def _add_config_commands(subparsers: argparse._SubParsersAction) -> None:
     config_sub.add_parser("validate", help="Validate the effective config; exit non-zero if invalid.")
     init_parser = config_sub.add_parser("init", help="Create .autoprompt/config.toml from the defaults.")
     init_parser.add_argument("--force", dest="force", action="store_true", help="Overwrite an existing config file.")
+
+
+def _add_auth_commands(subparsers: argparse._SubParsersAction) -> None:
+    auth_parser = subparsers.add_parser("auth", help="Manage optional local API token authentication.")
+    auth_sub = auth_parser.add_subparsers(dest="auth_command", metavar="subcommand")
+    token_parser = auth_sub.add_parser("token", help="API token helpers.")
+    token_sub = token_parser.add_subparsers(dest="token_command", metavar="subcommand")
+    token_sub.add_parser("generate", help="Generate and print a new secure API token (not saved).")
 
 
 def _add_search_commands(subparsers: argparse._SubParsersAction) -> None:
@@ -1086,6 +1095,9 @@ def cmd_config_show(args: argparse.Namespace) -> int:
     for section, values in settings.settings_to_dict(app_settings).items():
         print(f"[{section}]")
         for key, value in values.items():
+            # Never print the configured API token; show only that it is set or unset.
+            if section == "auth" and key == "api_token":
+                value = auth.redact_token(value)
             print(f"  {key} = {value}")
     return EXIT_OK
 
@@ -1119,6 +1131,26 @@ def _dispatch_config(args: argparse.Namespace) -> int:
         print("error: config requires a subcommand: show, validate, init", file=sys.stderr)
         return EXIT_USAGE
     return handler(args)
+
+
+# -- auth commands -----------------------------------------------------------
+
+
+def cmd_auth_token_generate(args: argparse.Namespace) -> int:
+    token = auth.generate_api_token()
+    print(token)
+    print("", file=sys.stderr)
+    print("Store this token (it is not saved automatically). Either:", file=sys.stderr)
+    print("  export AUTOPROMPT_API_TOKEN='<token>'   # and set AUTOPROMPT_AUTH_ENABLED=true", file=sys.stderr)
+    print("  or set [auth] api_token / enabled in .autoprompt/config.toml", file=sys.stderr)
+    return EXIT_OK
+
+
+def _dispatch_auth(args: argparse.Namespace) -> int:
+    if getattr(args, "auth_command", None) == "token" and getattr(args, "token_command", None) == "generate":
+        return cmd_auth_token_generate(args)
+    print("error: auth requires a subcommand: token generate", file=sys.stderr)
+    return EXIT_USAGE
 
 
 # -- search commands ---------------------------------------------------------
@@ -1951,6 +1983,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_worker(args)
     if args.command == "config":
         return _dispatch_config(args)
+    if args.command == "auth":
+        return _dispatch_auth(args)
     if args.command == "search":
         return _dispatch_search(args)
     if args.command == "compare":
