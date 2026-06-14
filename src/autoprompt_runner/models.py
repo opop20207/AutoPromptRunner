@@ -200,6 +200,29 @@ class RunCancellation:
 
 
 @dataclass
+class RecoveryAttempt:
+    """A failure-recovery attempt for a FAILED run, persisted in ``recovery_attempts``.
+
+    Records a focused, rule-generated recovery prompt for the failed step of
+    ``source_run_id``. ``status`` is ``PROPOSED`` / ``APPROVED`` / ``REJECTED`` /
+    ``EXECUTED`` / ``FAILED`` (see ``autoprompt_runner.recovery``). When the recovery is
+    executed a new run is created and its id is stored in ``recovery_run_id``; the original
+    run's records are never mutated (only this linking metadata is recorded).
+    """
+
+    id: int
+    source_run_id: int
+    recovery_run_id: Optional[int]
+    failed_step_id: Optional[int]
+    status: str
+    recovery_prompt: str
+    reason: Optional[str]
+    created_at: str
+    decided_at: Optional[str] = None
+    executed_at: Optional[str] = None
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

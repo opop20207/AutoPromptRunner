@@ -331,6 +331,25 @@ export interface ProviderAvailability {
   available: boolean;
 }
 
+export type RecoveryStatus = "PROPOSED" | "APPROVED" | "REJECTED" | "EXECUTED" | "FAILED";
+
+export interface RecoveryAttempt {
+  id: number;
+  source_run_id: number;
+  recovery_run_id?: number | null;
+  failed_step_id?: number | null;
+  status: string;
+  recovery_prompt: string;
+  reason?: string | null;
+  created_at: string;
+  decided_at?: string | null;
+  executed_at?: string | null;
+}
+
+export interface RecoveryListResponse {
+  recoveries: RecoveryAttempt[];
+}
+
 export interface Step {
   id: number;
   loop_index: number;

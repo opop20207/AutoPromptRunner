@@ -19,6 +19,8 @@ import type {
   ProviderProfileCreate,
   ProviderProfileUpdate,
   QueueJob,
+  RecoveryAttempt,
+  RecoveryListResponse,
   RunComparisonResponse,
   RunLock,
   SearchAllResponse,
@@ -181,6 +183,25 @@ export const api = {
     request<{ deleted: string }>(`/providers/${encodeURIComponent(name)}`, { method: "DELETE" }),
   checkProvider: (name: string) =>
     request<ProviderAvailability>(`/providers/${encodeURIComponent(name)}/check`),
+  getRunRecoveries: (runId: number) =>
+    request<RecoveryListResponse>(`/recovery/runs/${runId}`),
+  proposeRecovery: (runId: number, reason?: string) =>
+    request<RecoveryAttempt>(`/recovery/runs/${runId}/propose`, {
+      method: "POST",
+      body: JSON.stringify({ reason: reason ?? null }),
+    }),
+  approveRecovery: (recoveryId: number) =>
+    request<RecoveryAttempt>(`/recovery/${recoveryId}/approve`, { method: "POST" }),
+  rejectRecovery: (recoveryId: number, reason?: string) =>
+    request<RecoveryAttempt>(`/recovery/${recoveryId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason: reason ?? null }),
+    }),
+  executeRecovery: (recoveryId: number, queued: boolean) =>
+    request<RecoveryAttempt>(`/recovery/${recoveryId}/execute`, {
+      method: "POST",
+      body: JSON.stringify({ queued }),
+    }),
 };
 
 export function errorMessage(err: unknown): string {

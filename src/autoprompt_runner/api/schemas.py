@@ -338,3 +338,32 @@ class ProviderAvailabilityResponse(BaseModel):
     type: str
     command: str
     available: bool
+
+
+class RecoveryAttemptResponse(BaseModel):
+    id: int
+    source_run_id: int
+    recovery_run_id: Optional[int] = None
+    failed_step_id: Optional[int] = None
+    status: str
+    recovery_prompt: str
+    reason: Optional[str] = None
+    created_at: str
+    decided_at: Optional[str] = None
+    executed_at: Optional[str] = None
+
+
+class RecoveryProposeRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class RecoveryDecisionRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class RecoveryExecuteRequest(BaseModel):
+    queued: bool = False
+
+
+class RecoveryListResponse(BaseModel):
+    recoveries: List[RecoveryAttemptResponse] = []

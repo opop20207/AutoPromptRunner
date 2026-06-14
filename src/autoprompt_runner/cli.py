@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, cancel, chains, compare, locks, providers, queue, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, cancel, chains, compare, locks, providers, queue, recovery, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -99,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_compare_commands(subparsers)
     _add_chain_commands(subparsers)
     _add_provider_commands(subparsers)
+    _add_recovery_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -472,6 +473,37 @@ def _add_provider_commands(subparsers: argparse._SubParsersAction) -> None:
     check_parser = provider_sub.add_parser("check", help="Check a provider's command availability.")
     check_parser.add_argument("--name", required=True, help="Profile name.")
     _add_db_path(check_parser)
+
+
+def _add_recovery_commands(subparsers: argparse._SubParsersAction) -> None:
+    recovery_parser = subparsers.add_parser("recovery", help="Propose and run failure recovery for a failed run.")
+    recovery_sub = recovery_parser.add_subparsers(dest="recovery_command", metavar="subcommand")
+
+    propose_parser = recovery_sub.add_parser("propose", help="Propose a recovery for a FAILED run.")
+    propose_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="The FAILED run id.")
+    propose_parser.add_argument("--reason", default=None, help="Optional note for the recovery attempt.")
+    propose_parser.add_argument("--show-prompt", action="store_true", help="Print the full recovery prompt.")
+    _add_db_path(propose_parser)
+
+    approve_parser = recovery_sub.add_parser("approve", help="Approve a recovery attempt.")
+    approve_parser.add_argument("--id", dest="recovery_id", type=int, required=True, help="Recovery attempt id.")
+    approve_parser.add_argument("--execute", action="store_true", help="Execute the recovery after approving.")
+    approve_parser.add_argument("--queued", action="store_true", help="Queue the recovery run (with --execute).")
+    _add_db_path(approve_parser)
+
+    reject_parser = recovery_sub.add_parser("reject", help="Reject a recovery attempt.")
+    reject_parser.add_argument("--id", dest="recovery_id", type=int, required=True, help="Recovery attempt id.")
+    reject_parser.add_argument("--reason", default=None, help="Optional rejection reason.")
+    _add_db_path(reject_parser)
+
+    execute_parser = recovery_sub.add_parser("execute", help="Execute a recovery attempt (creates a linked run).")
+    execute_parser.add_argument("--id", dest="recovery_id", type=int, required=True, help="Recovery attempt id.")
+    execute_parser.add_argument("--queued", action="store_true", help="Queue the recovery run for a worker.")
+    _add_db_path(execute_parser)
+
+    list_parser = recovery_sub.add_parser("list", help="List recovery attempts (optionally for one run).")
+    list_parser.add_argument("--run-id", dest="run_id", type=int, default=None, help="Filter by source run id.")
+    _add_db_path(list_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -1404,6 +1436,107 @@ def _dispatch_provider(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- recovery commands -------------------------------------------------------
+
+
+def _recovery_exit(kind: str) -> int:
+    return EXIT_NOT_FOUND if kind == "not_found" else EXIT_RUN_FAILED
+
+
+def cmd_recovery_propose(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        attempt = recovery.propose_recovery(db_path, args.run_id, reason=args.reason)
+    except recovery.RecoveryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _recovery_exit(exc.kind)
+    print(f"Recovery #{attempt.id} proposed for run #{attempt.source_run_id} (status {attempt.status}).")
+    if args.show_prompt:
+        print(attempt.recovery_prompt)
+    else:
+        print(f"  prompt: {_shorten(attempt.recovery_prompt, 120)}")
+    return EXIT_OK
+
+
+def cmd_recovery_approve(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        attempt = recovery.approve_recovery(db_path, args.recovery_id)
+    except recovery.RecoveryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _recovery_exit(exc.kind)
+    print(f"Recovery #{attempt.id} approved.")
+    if args.execute:
+        try:
+            result = recovery.execute_recovery(db_path, args.recovery_id, queued=args.queued)
+        except recovery.RecoveryError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return _recovery_exit(exc.kind)
+        _print_recovery_execution(result)
+    return EXIT_OK
+
+
+def cmd_recovery_reject(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        attempt = recovery.reject_recovery(db_path, args.recovery_id, reason=args.reason)
+    except recovery.RecoveryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _recovery_exit(exc.kind)
+    print(f"Recovery #{attempt.id} rejected.")
+    return EXIT_OK
+
+
+def cmd_recovery_execute(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        result = recovery.execute_recovery(db_path, args.recovery_id, queued=args.queued)
+    except recovery.RecoveryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _recovery_exit(exc.kind)
+    _print_recovery_execution(result)
+    return EXIT_OK
+
+
+def _print_recovery_execution(result) -> None:
+    state = "queued" if result.queued else (result.run_status or "?")
+    print(f"Recovery #{result.attempt.id} executed -> run #{result.recovery_run_id} ({state}).")
+    if result.error:
+        print(f"  note: recovery run did not start cleanly: {result.error}")
+
+
+def cmd_recovery_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    items = (
+        recovery.list_recoveries_for_run(db_path, args.run_id)
+        if args.run_id is not None
+        else recovery.list_recoveries(db_path)
+    )
+    if not items:
+        print("No recovery attempts.")
+        return EXIT_OK
+    print(f"{'ID':>4}  {'SOURCE':>6}  {'RUN':>6}  {'STATUS':<10}  CREATED_AT")
+    for a in items:
+        run = str(a.recovery_run_id) if a.recovery_run_id is not None else "-"
+        print(f"{a.id:>4}  {a.source_run_id:>6}  {run:>6}  {a.status:<10}  {a.created_at}")
+    return EXIT_OK
+
+
+def _dispatch_recovery(args: argparse.Namespace) -> int:
+    handlers = {
+        "propose": cmd_recovery_propose,
+        "approve": cmd_recovery_approve,
+        "reject": cmd_recovery_reject,
+        "execute": cmd_recovery_execute,
+        "list": cmd_recovery_list,
+    }
+    handler = handlers.get(getattr(args, "recovery_command", None))
+    if handler is None:
+        print("error: recovery requires a subcommand: propose, approve, reject, execute, list", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -1713,6 +1846,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_chain(args)
     if args.command == "provider":
         return _dispatch_provider(args)
+    if args.command == "recovery":
+        return _dispatch_recovery(args)
     if args.command == "run":
         if getattr(args, "run_command", None) == "cancel":
             return cmd_run_cancel(args)

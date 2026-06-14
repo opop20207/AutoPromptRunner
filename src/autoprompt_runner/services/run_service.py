@@ -71,6 +71,9 @@ DEFAULT_PROVIDER_FACTORIES: Dict[str, ProviderFactory] = {
 # Providers that require a workspace directory to run.
 WORKSPACE_REQUIRED_PROVIDERS = ("claude-code", "codex")
 
+# Run statuses from which a failure recovery may be proposed (see autoprompt_runner.recovery).
+RECOVERABLE_STATUSES = (RunStatus.FAILED.value,)
+
 
 class RunInputError(Exception):
     """Raised when run inputs are invalid or a named project is missing.
@@ -301,6 +304,7 @@ class RunService:
         require_approval: bool = True,
         workspace: Optional[str] = None,
         timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+        project_id: Optional[int] = None,
     ) -> int:
         """Create a run row (status CREATED) without executing it. Returns the run id.
 
@@ -320,6 +324,26 @@ class RunService:
             require_approval=require_approval,
             workspace=workspace,
             timeout_seconds=timeout_seconds,
+            project_id=project_id,
+        )
+
+    def create_run_only_like(self, source_run, prompt: str) -> int:
+        """Create a new CREATED run reusing another run's settings (for failure recovery).
+
+        Reuses ``source_run``'s provider, workspace, timeout, max_loops, approval mode, and
+        project so a recovery run executes under the same conditions; the run is not executed
+        here (the caller links it, then enqueues or executes it). The original run's records
+        are not touched.
+        """
+        timeout = source_run.timeout_seconds if source_run.timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS
+        return self.create_run_only(
+            prompt=prompt,
+            provider=source_run.provider,
+            max_loops=source_run.max_loops,
+            require_approval=source_run.require_approval,
+            workspace=source_run.workspace,
+            timeout_seconds=timeout,
+            project_id=source_run.project_id,
         )
 
     def execute_run_step(self, run_id: int) -> StepExecutionReport:

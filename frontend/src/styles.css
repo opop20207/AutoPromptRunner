@@ -831,3 +831,20 @@ pre.block.large {
 .health-dot.bad {
   background: var(--error);
 }
+
+/* -- failure recovery -- */
+
+.recovery-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 8px;
+}
+
+.recovery-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}

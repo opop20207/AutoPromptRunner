@@ -21,6 +21,7 @@ from .models import (
     Project,
     ProviderProfile,
     QueueJob,
+    RecoveryAttempt,
     RunCancellation,
     RunLock,
     StoredRun,
@@ -213,6 +214,24 @@ CREATE TABLE IF NOT EXISTS provider_profiles (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_profiles_name ON provider_profiles (name);
+
+CREATE TABLE IF NOT EXISTS recovery_attempts (
+    id INTEGER PRIMARY KEY,
+    source_run_id INTEGER NOT NULL,
+    recovery_run_id INTEGER,
+    failed_step_id INTEGER,
+    status TEXT NOT NULL,
+    recovery_prompt TEXT NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    executed_at TEXT,
+    FOREIGN KEY (source_run_id) REFERENCES runs (id),
+    FOREIGN KEY (recovery_run_id) REFERENCES runs (id),
+    FOREIGN KEY (failed_step_id) REFERENCES steps (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recovery_attempts_source ON recovery_attempts (source_run_id);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1529,6 +1548,127 @@ def seed_default_provider_profiles(db_path: str, specs, force: bool = False) -> 
     return {"seeded": seeded, "skipped": skipped, "total": len(specs)}
 
 
+# -- recovery attempts -------------------------------------------------------
+
+
+def create_recovery_attempt(
+    db_path: str,
+    source_run_id: int,
+    recovery_prompt: str,
+    failed_step_id: Optional[int] = None,
+    reason: Optional[str] = None,
+    status: str = "PROPOSED",
+) -> int:
+    """Insert a recovery attempt (PROPOSED by default) and return its id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "INSERT INTO recovery_attempts "
+            "(source_run_id, recovery_run_id, failed_step_id, status, recovery_prompt, reason, "
+            "created_at, decided_at, executed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_run_id, None, failed_step_id, status, recovery_prompt, reason, _utcnow_iso(), None, None),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def get_recovery_attempt(db_path: str, recovery_id: int) -> Optional[RecoveryAttempt]:
+    """Return the recovery attempt with ``recovery_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM recovery_attempts WHERE id = ?", (recovery_id,)).fetchone()
+        return _row_to_recovery_attempt(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_latest_recovery_for_run(db_path: str, run_id: int) -> Optional[RecoveryAttempt]:
+    """Return the most recent recovery attempt for ``run_id`` (highest id), or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM recovery_attempts WHERE source_run_id = ? ORDER BY id DESC LIMIT 1", (run_id,)
+        ).fetchone()
+        return _row_to_recovery_attempt(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_recoveries_for_run(db_path: str, run_id: int) -> List[RecoveryAttempt]:
+    """Return all recovery attempts for ``run_id`` ordered by id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM recovery_attempts WHERE source_run_id = ? ORDER BY id ASC", (run_id,)
+        ).fetchall()
+        return [_row_to_recovery_attempt(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def update_recovery_status(
+    db_path: str,
+    recovery_id: int,
+    status: str,
+    decided_at=_UNSET,
+    executed_at=_UNSET,
+    reason=_UNSET,
+) -> None:
+    """Update a recovery attempt's status (and optionally decided/executed timestamps, reason)."""
+    sets = ["status = ?"]
+    params: List = [status]
+    if decided_at is not _UNSET:
+        sets.append("decided_at = ?")
+        params.append(decided_at)
+    if executed_at is not _UNSET:
+        sets.append("executed_at = ?")
+        params.append(executed_at)
+    if reason is not _UNSET:
+        sets.append("reason = ?")
+        params.append(reason)
+    params.append(recovery_id)
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(f"UPDATE recovery_attempts SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def attach_recovery_run(db_path: str, recovery_id: int, recovery_run_id: int) -> None:
+    """Link the created recovery run to its recovery attempt."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE recovery_attempts SET recovery_run_id = ? WHERE id = ?", (recovery_run_id, recovery_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_recoveries(db_path: str, limit: int = 50) -> List[RecoveryAttempt]:
+    """Return up to ``limit`` recovery attempts, newest first."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM recovery_attempts ORDER BY id DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+        return [_row_to_recovery_attempt(row) for row in rows]
+    finally:
+        conn.close()
+
+
 # -- search (SQLite LIKE; no external engine, no disk reads) ------------------
 
 
@@ -1866,4 +2006,19 @@ def _row_to_provider_profile(row: sqlite3.Row) -> ProviderProfile:
         enabled=bool(row["enabled"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_recovery_attempt(row: sqlite3.Row) -> RecoveryAttempt:
+    return RecoveryAttempt(
+        id=row["id"],
+        source_run_id=row["source_run_id"],
+        recovery_run_id=_opt(row, "recovery_run_id"),
+        failed_step_id=_opt(row, "failed_step_id"),
+        status=row["status"],
+        recovery_prompt=row["recovery_prompt"],
+        reason=_opt(row, "reason"),
+        created_at=row["created_at"],
+        decided_at=_opt(row, "decided_at"),
+        executed_at=_opt(row, "executed_at"),
     )

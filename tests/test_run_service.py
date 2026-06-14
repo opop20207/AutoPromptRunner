@@ -149,6 +149,22 @@ class ProviderProfileTests(unittest.TestCase):
         report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False)
         self.assertEqual(report.run_status, RunStatus.DONE.value)
 
+    def test_create_run_only_like_reuses_source_settings(self):
+        # Failure recovery creates a linked run that reuses the source run's settings.
+        svc = RunService(self.db)
+        source_id = svc.create_run_only(
+            "original prompt", "mock", max_loops=3, require_approval=False, timeout_seconds=600
+        )
+        source = storage.get_run(self.db, source_id)
+        recovery_run_id = svc.create_run_only_like(source, "recovery prompt")
+        recovery_run = storage.get_run(self.db, recovery_run_id)
+        self.assertNotEqual(recovery_run_id, source_id)
+        self.assertEqual(recovery_run.provider, "mock")
+        self.assertEqual(recovery_run.max_loops, 3)
+        self.assertEqual(recovery_run.timeout_seconds, 600)
+        self.assertEqual(recovery_run.root_prompt, "recovery prompt")
+        self.assertEqual(storage.get_run(self.db, source_id).root_prompt, "original prompt")  # source untouched
+
 
 class GitArtifactCaptureTests(unittest.TestCase):
     def setUp(self):

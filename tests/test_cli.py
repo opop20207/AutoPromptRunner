@@ -897,5 +897,54 @@ class ProviderCliTests(_DbTestCase):
         self.assertTrue(storage.get_provider_profile_by_name(self.db, "mock").enabled)
 
 
+class RecoveryCliTests(_DbTestCase):
+    def setUp(self):
+        super().setUp()
+        storage.init_db(self.db)
+        self.run_id = storage.create_run(
+            self.db, root_prompt="Fix signup", provider="mock", max_loops=1, require_approval=False
+        )
+        storage.create_step(self.db, self.run_id, 0, "run tests", "FAILED", stderr="AssertionError", exit_code=1)
+        storage.update_run_status(self.db, self.run_id, RunStatus.FAILED.value)
+
+    def test_recovery_propose_and_list(self):
+        code, out, err = run_cli(["recovery", "propose", "--run-id", str(self.run_id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("proposed", out.lower())
+        code, out, err = run_cli(["recovery", "list", "--run-id", str(self.run_id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("PROPOSED", out)
+
+    def test_recovery_propose_show_prompt_uses_stderr(self):
+        code, out, err = run_cli(
+            ["recovery", "propose", "--run-id", str(self.run_id), "--show-prompt", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("stderr", out)
+
+    def test_recovery_propose_non_failed_run(self):
+        ok = storage.create_run(self.db, root_prompt="ok", provider="mock", max_loops=1, require_approval=False)
+        storage.update_run_status(self.db, ok, RunStatus.RUNNING.value)
+        storage.update_run_status(self.db, ok, RunStatus.DONE.value)
+        code, out, err = run_cli(["recovery", "propose", "--run-id", str(ok), "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+
+    def test_recovery_approve_reject(self):
+        rid = storage.create_recovery_attempt(self.db, self.run_id, "recover please")
+        code, out, err = run_cli(["recovery", "approve", "--id", str(rid), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(storage.get_recovery_attempt(self.db, rid).status, "APPROVED")
+        rid2 = storage.create_recovery_attempt(self.db, self.run_id, "recover please")
+        code, out, err = run_cli(["recovery", "reject", "--id", str(rid2), "--reason", "no", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(storage.get_recovery_attempt(self.db, rid2).status, "REJECTED")
+
+    def test_recovery_execute_creates_linked_run(self):
+        rid = storage.create_recovery_attempt(self.db, self.run_id, "recover please")
+        code, out, err = run_cli(["recovery", "execute", "--id", str(rid), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIsNotNone(storage.get_recovery_attempt(self.db, rid).recovery_run_id)
+
+
 if __name__ == "__main__":
     unittest.main()

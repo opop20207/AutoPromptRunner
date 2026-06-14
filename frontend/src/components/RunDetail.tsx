@@ -13,6 +13,7 @@ import { LiveLogPanel } from "./LiveLogPanel";
 import { LockPanel } from "./LockPanel";
 import { PromptChainPanel } from "./PromptChainPanel";
 import { QueuePanel } from "./QueuePanel";
+import { RecoveryPanel } from "./RecoveryPanel";
 import { SafetyPanel } from "./SafetyPanel";
 import { StatusBadge } from "./StatusBadge";
 import { StepList } from "./StepList";
@@ -22,11 +23,13 @@ export function RunDetail({
   refreshKey,
   onChanged,
   onUseAsCompare,
+  onOpenRun,
 }: {
   runId: number | null;
   refreshKey: number;
   onChanged: () => void;
   onUseAsCompare?: (slot: "a" | "b", id: number) => void;
+  onOpenRun?: (id: number) => void;
 }) {
   const [detail, setDetail] = useState<RunDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +133,15 @@ export function RunDetail({
             <h3>Safety</h3>
             <SafetyPanel artifacts={detail.artifacts} />
           </div>
+
+          {/* 4b. Failure recovery (the panel renders only when FAILED or attempts exist) */}
+          <RecoveryPanel
+            runId={detail.id}
+            runStatus={detail.status}
+            refreshKey={artifactRefresh}
+            onChanged={onChanged}
+            onOpenRun={onOpenRun ?? (() => {})}
+          />
 
           {/* 5. Steps */}
           <div className="subsection">

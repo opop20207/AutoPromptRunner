@@ -31,6 +31,7 @@ above (or scroll) for the full feature tour; each capability has its own section
 - Compare two runs (metadata, steps, changed files, diff stats, artifacts)
 - Prompt chain history timeline (root → step prompts → next prompts, per run)
 - Provider profiles (configurable command / timeout / args + availability checks)
+- Failure recovery (rule-based recovery prompt + new linked recovery run)
 - Config file + environment overrides
 - Safety checks (blocked commands, secret-file warnings, hard limits)
 
@@ -779,6 +780,65 @@ prompt (with copy buttons) and the per-type artifact counts. A filter switches b
 working tree); it is linear per run (no branch graph) and uses no graph-visualization
 library; there is no semantic prompt analysis; and it performs no file-system reads.
 
+## Failure recovery
+
+When a run ends `FAILED`, **failure recovery** turns its stored failure context into a
+focused, rule-generated recovery prompt and runs it as a **new linked run** -- without
+losing the original run's history. The recovery prompt is built from *stored content only*
+(the failed step's prompt and stdout/stderr previews, exit code, changed files, diff stat,
+and safety warnings); it uses **no external AI API** and reads no workspace files. It asks
+the agent to fix **only** the failed step, use stderr as the primary source, preserve the
+intended behavior, rerun the relevant tests/command, and report remaining blockers -- and it
+invents no file paths or test names (it only echoes stored signal), with compact previews so
+no huge artifact content (or secret-file content) is included.
+
+A recovery attempt has a status (`PROPOSED` → `APPROVED` / `REJECTED` → `EXECUTED` /
+`FAILED`). Only `FAILED` runs can be recovered. Executing a recovery creates a new run that
+**reuses the source run's provider / workspace / timeout / max-loops / approval / project
+settings** and obeys the same safety checks, workspace locks, queue, and approval behavior;
+the new run's id is linked back to the attempt (immediately, even when queued). The original
+run's records are never mutated -- only the recovery linking metadata is stored.
+
+CLI (`recovery` command group):
+
+```
+python -m autoprompt_runner.cli recovery propose --run-id 12            # only for a FAILED run
+python -m autoprompt_runner.cli recovery propose --run-id 12 --show-prompt --reason "tests failing"
+python -m autoprompt_runner.cli recovery approve --id 3                 # approve (does not execute)
+python -m autoprompt_runner.cli recovery approve --id 3 --execute --queued
+python -m autoprompt_runner.cli recovery reject  --id 3 --reason "Not needed"
+python -m autoprompt_runner.cli recovery execute --id 3 --queued        # create + run the linked recovery run
+python -m autoprompt_runner.cli recovery list --run-id 12
+```
+
+`propose` exits non-zero if the run is not `FAILED`; `execute` exits non-zero if the
+recovery was rejected.
+
+API (`/recovery` route group; same local database):
+
+```
+curl -X POST http://127.0.0.1:8000/recovery/runs/12/propose -H "Content-Type: application/json" -d '{"reason":"tests failing"}'
+curl http://127.0.0.1:8000/recovery/runs/12
+curl -X POST http://127.0.0.1:8000/recovery/3/approve
+curl -X POST http://127.0.0.1:8000/recovery/3/reject -H "Content-Type: application/json" -d '{"reason":"Not needed"}'
+curl -X POST http://127.0.0.1:8000/recovery/3/execute -H "Content-Type: application/json" -d '{"queued":true}'
+curl http://127.0.0.1:8000/recovery
+```
+
+`POST /recovery/runs/{run_id}/propose` returns `400` if the run is not `FAILED`; a missing
+run or recovery returns `404`; `POST /recovery/{id}/execute` returns `409` if the recovery
+was rejected and otherwise returns the attempt with its linked `recovery_run_id`.
+
+In the **web UI**, the run detail has a **Recovery** section (shown only when the run is
+`FAILED` or already has recovery attempts): a *Propose recovery* button, each attempt's
+status badge and recovery-prompt preview (with *Show full prompt*), *Approve* / *Reject* /
+*Execute* / *Execute queued* actions, and a link to open the linked recovery run. The *Runs*
+list shows a *Recover* shortcut on failed rows that opens the run detail.
+
+**Limitations.** Recovery uses **stored failure context only** (not the working tree); the
+recovery prompt is rule-based (no semantic analysis, no external AI); it creates a **new
+linked run** rather than rerunning the original; and only `FAILED` runs are recoverable.
+
 ## Provider settings (provider profiles)
 
 A **provider profile** configures how a provider is invoked -- its `command` executable, a
@@ -1097,6 +1157,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Compare two runs (CLI / API / web UI)
 - [x] Prompt chain history view (CLI / API / web UI)
 - [x] Provider profiles / settings management (CLI / API / web UI)
+- [x] Failure recovery workflow (CLI / API / web UI)
 - [x] Config file / environment overrides (`config show` / `validate` / `init`)
 - [x] FastAPI backend and the React/Vite frontend build
 - [x] End-to-end CLI and API flow tests pass

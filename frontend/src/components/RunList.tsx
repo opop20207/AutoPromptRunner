@@ -190,6 +190,17 @@ export function RunList({
                         Chain
                       </button>
                     )}
+                    {run.status === "FAILED" && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelect(run.id);
+                        }}
+                        title="Open the run to propose a recovery"
+                      >
+                        Recover
+                      </button>
+                    )}
                     {CANCELLABLE_RUN_STATUSES.includes(run.status) && (
                       <button
                         className="danger"

@@ -42,6 +42,53 @@ def _looks_like_test_failure(stdout: str, stderr: str) -> bool:
     return any(indicator in text for indicator in _TEST_FAILURE_INDICATORS)
 
 
+# Previews of stored runner output included in a recovery prompt (kept short and never the
+# full captured output, so a huge log is not echoed back).
+_RECOVERY_STDERR_PREVIEW = 200
+_RECOVERY_STDOUT_PREVIEW = 160
+_RECOVERY_FILES_PREVIEW = 120
+
+
+def build_recovery_prompt(
+    root_prompt: str,
+    failed_prompt: str,
+    stderr: str,
+    stdout: str,
+    exit_code,
+    changed_files=None,
+    diff_stat: str = "",
+) -> str:
+    """Build a focused, deterministic recovery prompt for a failed step.
+
+    Rule-based (no AI, no network): it restates the original task, forwards a short preview
+    of the *stored* stderr (primary) or stdout (secondary), and instructs the agent to fix
+    only the failure, preserve intended behavior, rerun the relevant tests/command, and
+    report blockers. It invents no file paths or test names -- it only echoes stored signal.
+    """
+    root = _short(root_prompt, 80)
+    parts = [
+        "Recover from the failed AutoPromptRunner step. Fix only the failure from the previous step.",
+    ]
+    if (stderr or "").strip():
+        parts.append(f"Use stderr as the primary source: {_short(stderr, _RECOVERY_STDERR_PREVIEW)}.")
+    elif (stdout or "").strip():
+        parts.append(
+            f"There was no stderr; use the stdout output as context: {_short(stdout, _RECOVERY_STDOUT_PREVIEW)}."
+        )
+    else:
+        parts.append(f"The step exited with code {exit_code} and produced no output; inspect the workspace state.")
+    changed = [f for f in (changed_files or []) if f]
+    if changed:
+        parts.append(f"Files changed in the failed step: {_short(', '.join(changed[:5]), _RECOVERY_FILES_PREVIEW)}.")
+    parts.append("Do not expand scope or start unrelated refactors; preserve the intended behavior.")
+    parts.append(
+        "Rerun the relevant tests or the failed command, and report changed files, test result, "
+        "and remaining blockers."
+    )
+    parts.append(f'Original task: "{root}".')
+    return " ".join(parts)
+
+
 class PromptGenerator:
     """Generate a compact, actionable, deterministic next prompt from step context."""
 

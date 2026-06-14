@@ -175,6 +175,7 @@ export default function App() {
           refreshKey={detailRefresh}
           onChanged={onRunChanged}
           onUseAsCompare={useAsCompare}
+          onOpenRun={openRun}
         />
       )}
     </Layout>
