@@ -845,6 +845,33 @@ class CommitCliTests(unittest.TestCase):
         self.assertIn("subcommand", err.lower())
 
 
+class CrossPlatformPathCliTests(unittest.TestCase):
+    """The CLI must accept workspace / DB paths with spaces (and Windows-style paths)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_run_accepts_workspace_path_with_spaces(self):
+        ws = os.path.join(self._tmp.name, "work space dir")
+        os.makedirs(ws)
+        code, out, err = run_cli([
+            "run", "--prompt", "hello", "--provider", "mock", "--max-loops", "1",
+            "--no-approval", "--workspace", ws, "--db-path", self.db,
+        ])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(storage.list_runs(self.db)[0].status, RunStatus.DONE.value)
+
+    def test_init_db_in_path_with_spaces(self):
+        db = os.path.join(self._tmp.name, "state dir", "autoprompt.db")
+        code, out, err = run_cli(["init-db", "--db-path", db])
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.exists(db))  # parent dir was created cross-platform
+
+
 class ConfigCliTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

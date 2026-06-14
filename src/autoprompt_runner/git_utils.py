@@ -57,8 +57,10 @@ def run_git_command(path: str, args: Sequence[str], timeout_seconds: int = 30) -
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
-            cwd=path,
+            cwd=os.fspath(path) if path else None,
             shell=False,
             check=False,
         )
@@ -178,8 +180,10 @@ def _run_mutating_git(path: str, args: Sequence[str], timeout_seconds: int) -> G
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
-            cwd=path,
+            cwd=os.fspath(path) if path else None,
             shell=False,
             check=False,
         )

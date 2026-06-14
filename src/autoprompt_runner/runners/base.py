@@ -7,6 +7,8 @@ adapter that satisfies this interface, without changing the calling code.
 
 from __future__ import annotations
 
+import os
+import shutil
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 
@@ -15,6 +17,23 @@ from ..models import AgentResult
 # An optional output callback: ``callback(stream, line)`` where ``stream`` is "stdout" or
 # "stderr". Used by the run service to turn captured output into live log events.
 OutputCallback = Callable[[str, str], None]
+
+
+def resolve_command(command: str) -> str:
+    """Resolve an executable name to a full path via ``shutil.which`` (cross-platform).
+
+    An explicit path (absolute, or one containing a separator -- e.g. ``C:\\Program Files\\x\\
+    claude.exe`` or ``./bin/codex``) is returned unchanged so commands with spaces work when
+    given as a full path. A bare name is looked up on ``PATH`` (honoring ``PATHEXT`` on Windows,
+    so ``claude`` resolves to ``claude.cmd``/``claude.exe``); if not found, the original name is
+    returned so the runner still surfaces a clean "command not found". Never runs a shell.
+    """
+    if not command:
+        return command
+    has_separator = (os.sep in command) or bool(os.altsep and os.altsep in command)
+    if has_separator:
+        return command
+    return shutil.which(command) or command
 
 
 class AgentRunner(ABC):

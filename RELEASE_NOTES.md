@@ -104,3 +104,22 @@ python -m autoprompt_runner.cli show-artifacts --run-id 1
   `config show`, or returned by `/health`. The web UI has a compact header token control
   (stored only in the browser). See "Local access protection" in the README. This is a single
   shared token only — no user accounts, OAuth, or HTTPS management.
+
+- **Windows compatibility & process-stability hardening** (added after the v0.1.0 release
+  candidate). AutoPromptRunner now runs reliably on **Windows, macOS, and Linux**:
+  - A new `autoprompt_runner.paths` module centralizes path handling (pathlib-based): Windows
+    drive letters are preserved, paths with **spaces** and **non-ASCII (e.g. Korean)** names
+    are handled, and workspace **lock keys** normalize consistently (case-insensitive on
+    Windows) so `C:\Dev\Project`, `c:/Dev/Project`, and `C:/Dev/Project/` are one workspace.
+  - Subprocess runners resolve the executable via `shutil.which` (honoring `PATHEXT` on
+    Windows), keep `shell=False`, and decode output with a UTF-8 + `errors="replace"` fallback.
+  - Process cancellation uses cross-platform `terminate`/`kill` (no POSIX-only signals),
+    escalates to kill after a grace period, and safely handles already-exited/missing
+    processes; the worker loop survives a transient per-cycle error.
+  - **PowerShell scripts** mirror the bash helpers: `dev_api.ps1`, `dev_worker.ps1`,
+    `dev_frontend.ps1`, `check_all.ps1`, `doctor.ps1` (no admin rights, no execution-policy
+    change, optional `claude`/`codex` checks only warn).
+  - New tests cover Windows-style paths, spaced/non-ASCII paths, lock normalization, and
+    process cancellation with fake process objects. See "Windows setup (PowerShell)" in the
+    README. No destructive Git commands were added; the rollback `git reset --hard` and the
+    local-commit `git add`/`git commit` remain the only guarded writes.

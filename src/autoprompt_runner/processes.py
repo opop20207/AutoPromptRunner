@@ -59,24 +59,42 @@ def terminate_process(run_id: int, grace_seconds: int = 5) -> bool:
     """Terminate the process registered for ``run_id``; return True if one was signaled.
 
     Sends a graceful ``terminate`` first and escalates to ``kill`` only if the process is
-    still alive after ``grace_seconds``. Returns False (safely) when no live process is
-    registered -- which is also the cross-process case where the run executes in a
-    different process than this one.
+    still alive after ``grace_seconds``. Cross-platform: ``Popen.terminate`` / ``.kill`` map to
+    ``SIGTERM`` / ``SIGKILL`` on POSIX and ``TerminateProcess`` on Windows -- no POSIX-only
+    signals are used. Returns False (safely) when no live process is registered -- which is also
+    the cross-process case where the run executes in a different process than this one. A
+    process that exits between checks (a race) is handled safely and never raises.
     """
     process = get_process(run_id)
     if process is None:
         return False
-    if process.poll() is not None:
-        return False  # already exited
+    try:
+        if process.poll() is not None:
+            return False  # already exited
+    except OSError:
+        return False  # process object no longer queryable
     with _lock:
         _terminated.add(int(run_id))
-    process.terminate()  # graceful (SIGTERM / Windows TerminateProcess)
+    if not _safe_signal(process.terminate):
+        return True  # process vanished after the poll; treat as terminated
     try:
         process.wait(timeout=grace_seconds)
     except subprocess.TimeoutExpired:
-        process.kill()  # force only after the grace period
+        _safe_signal(process.kill)  # force only after the grace period
         try:
             process.wait(timeout=grace_seconds)
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
             pass
+    except OSError:
+        pass  # already gone
     return True
+
+
+def _safe_signal(action) -> bool:
+    """Call ``terminate``/``kill`` tolerating an already-exited process. Return True if sent."""
+    try:
+        action()
+        return True
+    except (OSError, ValueError):
+        # ProcessLookupError (POSIX) / OSError (Windows) when the process is already gone.
+        return False

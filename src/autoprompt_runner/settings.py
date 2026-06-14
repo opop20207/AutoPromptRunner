@@ -261,13 +261,30 @@ def load_settings(config_path: Optional[str] = None) -> AppSettings:
     """Return the effective settings: defaults <- config file <- environment.
 
     Explicit CLI flags / project profiles are layered on top by callers at execution time.
+    Filesystem paths (db path, worktrees base dir, default workspace) are normalized to the
+    native form for the platform so values written with ``/`` on Windows (or with trailing
+    separators / redundant ``..``) behave consistently. Normalization is textual only -- it
+    does not make paths absolute and does not touch the filesystem.
     """
     settings = build_default_settings()
     path = _resolve_config_path(config_path)
     if path is not None:
         _apply_toml(settings, _read_toml(path))
     _apply_env(settings)
+    _normalize_paths(settings)
     return settings
+
+
+def _normalize_paths(settings: AppSettings) -> None:
+    """Normalize configured filesystem paths to the native form (cross-platform)."""
+    from . import paths  # local import to avoid an import cycle at module load
+
+    if settings.storage.db_path.strip():
+        settings.storage.db_path = paths.normalize_path(settings.storage.db_path)
+    if settings.worktrees.base_dir.strip():
+        settings.worktrees.base_dir = paths.normalize_path(settings.worktrees.base_dir)
+    if settings.defaults.workspace.strip():
+        settings.defaults.workspace = paths.normalize_path(settings.defaults.workspace)
 
 
 def validate_settings(settings: AppSettings) -> None:

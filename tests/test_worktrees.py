@@ -80,6 +80,22 @@ class PathContainmentTests(unittest.TestCase):
         root = worktrees.default_worktrees_root(db_path)
         self.assertTrue(worktrees.is_path_inside_parent(path, root))
 
+    def test_build_path_with_spaces(self):
+        path = worktrees.build_worktree_path(os.path.join("root dir", "proj"), "wt")
+        self.assertIn("root dir", path)
+        self.assertTrue(path.endswith(os.path.join("proj", "wt")))
+
+    def test_is_path_inside_parent_with_spaces(self):
+        parent = os.path.abspath("Parent Dir")
+        child = os.path.join(parent, "child")
+        self.assertTrue(worktrees.is_path_inside_parent(child, parent))
+        self.assertFalse(worktrees.is_path_inside_parent(parent, parent))  # equal is not inside
+
+    def test_prepare_path_with_spaced_db_dir(self):
+        db_path = os.path.join("state dir", "autoprompt.db")
+        path = worktrees.prepare_worktree_path(db_path, "Proj", "ui-session")
+        self.assertTrue(worktrees.is_path_inside_parent(path, worktrees.default_worktrees_root(db_path)))
+
 
 class GitWorktreeTests(unittest.TestCase):
     def setUp(self):

@@ -126,5 +126,36 @@ class LockAcquireTests(unittest.TestCase):
         self.assertIsNotNone(locks.active_lock_for_workspace(self.db, alt))
 
 
+class LockPathNormalizationTests(unittest.TestCase):
+    """Lock keys must normalize Windows-style / spaced / trailing-separator path forms."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_empty_workspace_normalizes_to_empty(self):
+        self.assertEqual(locks.normalize_workspace(None), "")
+        self.assertEqual(locks.normalize_workspace(""), "")
+
+    def test_spaced_path_trailing_separator_same_lock(self):
+        ws = os.path.join(self._tmp.name, "Work Space")
+        os.makedirs(ws)
+        locks.acquire_lock(self.db, ws, run_id=1, timeout_seconds=60)
+        with self.assertRaises(locks.LockConflictError):
+            locks.acquire_lock(self.db, ws + os.sep, run_id=2, timeout_seconds=60)
+
+    @unittest.skipUnless(os.name == "nt", "Windows case-insensitive lock keys")
+    def test_windows_case_insensitive_lock_key(self):
+        ws = os.path.join(self._tmp.name, "WS")
+        os.makedirs(ws)
+        locks.acquire_lock(self.db, ws, run_id=1, timeout_seconds=60)
+        with self.assertRaises(locks.LockConflictError):  # different case -> same key
+            locks.acquire_lock(self.db, ws.lower(), run_id=2, timeout_seconds=60)
+
+
 if __name__ == "__main__":
     unittest.main()

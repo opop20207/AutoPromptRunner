@@ -146,6 +146,85 @@ scripts/doctor.sh           # diagnose a local environment (exits non-zero only 
 scripts/package_release.sh  # assemble a local v0.1 release under dist/release-v0.1
 ```
 
+**PowerShell equivalents** (Windows) live alongside the bash scripts: `dev_api.ps1`,
+`dev_worker.ps1`, `dev_frontend.ps1`, `check_all.ps1`, and `doctor.ps1`. They do not require
+admin rights, do not change the execution policy, print no secrets, and delete no user files;
+`doctor.ps1`'s optional `claude`/`codex` checks only warn. See *Windows setup* below.
+
+## Windows setup (PowerShell)
+
+AutoPromptRunner runs on Windows, macOS, and Linux. On Windows, paths (including drive
+letters, spaces, and non-ASCII like Korean), subprocess launching, process cancellation, and
+workspace lock keys are all handled cross-platform. Use the PowerShell scripts in `scripts/`.
+
+**Prerequisites**
+
+- **Python >= 3.11** (3.13 recommended) on `PATH` — check with `python --version`.
+- **Node.js >= 18 and npm** (only for the web UI) — `node --version`, `npm --version`.
+- **Git for Windows** (for worktrees, checkpoints, and commits) — `git --version`. Without it,
+  Git features are skipped cleanly and never crash a run.
+- *Optional:* the **Claude Code** and/or **Codex** CLI on `PATH` (only for those providers).
+  The CLI resolves them via `PATH`/`PATHEXT`, so an npm shim such as `claude.cmd` is found.
+
+**Set up a virtual environment and install**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1        # activate (no execution-policy change needed for this shell)
+pip install -e ".[api,dev]"
+python -m autoprompt_runner.cli config init      # optional: write a default config
+.\scripts\doctor.ps1                # verify the environment (exits non-zero only on a required failure)
+```
+
+**Run the three local processes** (each in its own PowerShell window):
+
+```powershell
+# 1) Backend API (http://127.0.0.1:8000)
+.\scripts\dev_api.ps1
+
+# 2) Background worker (executes queued runs; Ctrl+C to stop)
+.\scripts\dev_worker.ps1
+
+# 3) Frontend dev server (http://localhost:5173)
+.\scripts\dev_frontend.ps1
+```
+
+Run the full local check suite before committing:
+
+```powershell
+.\scripts\check_all.ps1             # backend tests + config validate + mock provider + frontend build
+```
+
+**Paths with spaces** — quote them; both Windows and POSIX spellings work:
+
+```powershell
+python -m autoprompt_runner.cli run --prompt "tidy up" --provider mock --no-approval `
+  --workspace "C:\Users\me\My Projects\App"
+python -m autoprompt_runner.cli project add --name app --repo-path "C:/Users/me/My Projects/App"
+```
+
+`C:\Dev\Project`, `c:/Dev/Project`, and `C:/Dev/Project/` refer to the same workspace (the lock
+key is case-insensitive on Windows), so a run never deadlocks itself over a path spelling.
+
+**Troubleshooting (Windows)**
+
+- **`python` / `claude` "command not found"** — ensure it is installed and on `PATH` (reopen the
+  terminal after installing). `.\scripts\doctor.ps1` reports what is missing; missing
+  `claude`/`codex` only warn.
+- **PowerShell "running scripts is disabled" (execution policy)** — the scripts never change the
+  policy. Either run a command directly (e.g. `python -m autoprompt_runner.cli ...`), or launch a
+  script in a single bypassed child shell **without changing the machine setting**:
+  `powershell -ExecutionPolicy Bypass -File .\scripts\doctor.ps1`. Alternatively set it for your
+  user only: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+- **Paths with spaces** — wrap the whole path in double quotes (see above); do not escape spaces.
+- **Non-ASCII (e.g. Korean) paths** — supported. Output is decoded with a UTF-8 fallback, so a
+  non-UTF-8 console code page will not crash a run.
+- **Git not installed** — install Git for Windows. Git artifact capture, checkpoints, worktrees,
+  and commits are skipped (not fatal) when `git` is absent.
+- **Port already in use (8000 / 5173)** — set `AUTOPROMPT_API_PORT` (and use uvicorn's host/port)
+  for the API, e.g. `$env:AUTOPROMPT_API_PORT = "8010"; .\scripts\dev_api.ps1`; for the frontend,
+  run `npm run dev -- --port 5174` in `frontend/`.
+
 ## MVP Workflow
 
 ```

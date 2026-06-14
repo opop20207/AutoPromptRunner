@@ -22,7 +22,10 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Sequence
+
+from . import paths
 
 # Worktree lifecycle statuses.
 WORKTREE_ACTIVE = "ACTIVE"
@@ -112,16 +115,12 @@ def validate_branch_name(branch: str) -> str:
 
 
 def is_path_inside_parent(path: str, parent: str) -> bool:
-    """Return True if ``path`` resolves to a location strictly inside ``parent``."""
-    if not path or not parent:
-        return False
-    path_abs = os.path.abspath(path)
-    parent_abs = os.path.abspath(parent)
-    try:
-        common = os.path.commonpath([path_abs, parent_abs])
-    except ValueError:  # e.g. different drives on Windows
-        return False
-    return common == parent_abs and path_abs != parent_abs
+    """Return True if ``path`` resolves to a location strictly inside ``parent``.
+
+    Delegates to :func:`autoprompt_runner.paths.is_subpath` (pathlib-based; Windows-aware
+    case-insensitive comparison; different drives are not contained).
+    """
+    return paths.is_subpath(path, parent)
 
 
 def safe_path_component(value: str) -> str:
@@ -133,22 +132,22 @@ def safe_path_component(value: str) -> str:
 
 def default_worktrees_root(db_path: str) -> str:
     """Return the worktrees root next to the database (``<state-dir>/worktrees``)."""
-    base = os.path.dirname(os.path.abspath(db_path)) if db_path else ".autoprompt"
-    return os.path.join(base, _WORKTREES_DIRNAME)
+    base = Path(os.path.abspath(db_path)).parent if db_path else Path(os.path.abspath(".autoprompt"))
+    return str(base / _WORKTREES_DIRNAME)
 
 
 def build_worktree_path(base_dir: str, name: str) -> str:
     """Return ``base_dir/<validated-name>`` (the name is validated as a path component)."""
-    return os.path.join(base_dir, validate_worktree_name(name))
+    return str(Path(base_dir) / validate_worktree_name(name))
 
 
 def prepare_worktree_path(db_path: str, project_name: str, name: str) -> str:
     """Compute the absolute worktree path and enforce it stays inside the worktrees root."""
     root = default_worktrees_root(db_path)
-    project_dir = os.path.join(root, safe_path_component(project_name))
+    project_dir = str(Path(root) / safe_path_component(project_name))
     path = os.path.abspath(build_worktree_path(project_dir, name))
     if not is_path_inside_parent(path, root):
-        raise WorktreeError(f"computed worktree path escapes the worktrees root: {path}")
+        raise WorktreeError(f"computed worktree path escapes the worktrees root: {paths.safe_display_path(path)}")
     return path
 
 

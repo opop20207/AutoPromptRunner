@@ -19,7 +19,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from . import storage
+from . import paths, storage
 from .models import RunLock
 from .storage import LOCK_ACTIVE, LOCK_EXPIRED, LOCK_RELEASED  # noqa: F401  (re-exported)
 
@@ -45,13 +45,12 @@ class LockConflictError(Exception):
 def normalize_workspace(path: Optional[str]) -> str:
     """Normalize a workspace path for lock comparison.
 
-    Resolves to an absolute path and applies OS-aware case/separator normalization, so
-    differently-written paths to the same directory map to one lock key. Does not touch
-    the filesystem (no symlink resolution).
+    Delegates to :func:`autoprompt_runner.paths.normalize_workspace_path`: resolves to an
+    absolute path and applies OS-aware case/separator normalization, so differently-written
+    paths to the same directory (trailing separators, ``/`` vs ``\\``, and -- on Windows --
+    differing case) map to one lock key. Does not touch the filesystem (no symlink resolution).
     """
-    if not path:
-        return ""
-    return os.path.normcase(os.path.abspath(path))
+    return paths.normalize_workspace_path(path)
 
 
 def default_lock_ttl_seconds(timeout_seconds: Optional[int]) -> int:

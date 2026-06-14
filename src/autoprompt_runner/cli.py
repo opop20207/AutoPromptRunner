@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, auth, cancel, chains, checkpoints, commits, compare, export_import, locks, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, auth, cancel, chains, checkpoints, commits, compare, export_import, locks, paths, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -643,7 +643,8 @@ def cmd_version() -> int:
 def cmd_init_db(args: argparse.Namespace) -> int:
     db_path = args.db_path or settings.load_settings(args.config).storage.db_path
     path = storage.init_db(db_path)
-    print(f"Database initialized at: {path}")
+    # Show a readable, native-form path (handles Windows drive letters / mixed separators).
+    print(f"Database initialized at: {paths.safe_display_path(path)}")
     return EXIT_OK
 
 

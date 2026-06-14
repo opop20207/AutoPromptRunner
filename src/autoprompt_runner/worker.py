@@ -92,7 +92,14 @@ class LocalWorker:
         try:
             while not self._stop.is_set():
                 self._beat()
-                ran = self.run_once()
+                # A transient per-cycle error (e.g. a momentary SQLite file lock, which is
+                # stricter on Windows) must not kill a long-running worker. ``run_once`` already
+                # records a failed *job*; this guards the claim/poll itself. Returns to idle.
+                try:
+                    ran = self.run_once()
+                except Exception as exc:  # noqa: BLE001 - keep the worker loop alive
+                    self.log(f"worker: poll error (continuing): {exc}")
+                    ran = False
                 if ran:
                     executed += 1
                     if stop_after is not None and executed >= stop_after:

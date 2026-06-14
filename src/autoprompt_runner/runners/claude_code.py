@@ -16,7 +16,7 @@ from typing import List, Optional
 
 from .. import config, processes
 from ..models import AgentResult
-from .base import AgentRunner
+from .base import AgentRunner, resolve_command
 
 # Exit codes used when the subprocess could not produce its own return code.
 _EXIT_TIMEOUT = 124
@@ -87,13 +87,16 @@ class ClaudeCodeRunner(AgentRunner):
 
     def _build_argv(self, prompt: str) -> List[str]:
         # Non-interactive print mode: claude [extra args] -p "<prompt>". No shell is used.
-        return [self.command, *self.extra_args, "-p", prompt]
+        # The executable is resolved via shutil.which so a bare name finds the right entry on
+        # PATH/PATHEXT (Windows), and an explicit path (with spaces) is used as given.
+        return [resolve_command(self.command), *self.extra_args, "-p", prompt]
 
     def run(self, prompt: str, run_id: Optional[int] = None) -> AgentResult:
         started_at = _now_iso()
         argv = self._build_argv(prompt)
         # subprocess.Popen (not subprocess.run) so the process can be registered and
-        # cancelled while it runs. No shell is used.
+        # cancelled while it runs. No shell is used. UTF-8 with errors="replace" keeps
+        # decoding robust across locales (e.g. non-ASCII output on a non-UTF-8 Windows console).
         try:
             process = subprocess.Popen(
                 argv,
@@ -102,6 +105,8 @@ class ClaudeCodeRunner(AgentRunner):
                 cwd=self.workspace,
                 shell=False,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         except FileNotFoundError:
             return AgentResult(
