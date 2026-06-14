@@ -828,6 +828,69 @@ checkpoints are captured automatically -- no configuration is needed.
   explicit rollback path); it never runs `git clean`, never deletes files, and never
   pushes/pulls/merges/rebases. Untracked files are left in place by `reset --hard`.
 
+## Local commit workflow
+
+After a run succeeds, you can **review** its workspace changes and create a **local Git
+commit** -- explicitly, never automatically, and **never pushed**. The flow is: *review* (what
+changed, is it ready, a proposed message) → *propose* (record the proposal) → *apply* (create
+the local commit after confirmation).
+
+**Review** gathers, read-only: the run id and status, the workspace, the changed files, the
+diff stat, safety warnings, the latest checkpoint id, a **rule-based** proposed commit message,
+and any **readiness blockers**. A commit is blocked when: the run is still RUNNING / queued /
+waiting for approval / STOPPED, the run FAILED (unless you pass `--allow-failed`), the workspace
+is missing or not a Git repo, there are **no changed files**, a **secret-like** file would be
+committed, a safety blocker exists, or another active run holds the workspace lock.
+
+The proposed message is generated locally from the run's root prompt and changed files (no AI):
+a compact subject (kept under 72 chars where practical) plus a short body recording the run id,
+provider, and changed-file count. It never includes file contents, secrets, or stdout/stderr.
+
+**Apply** stages only the selected (or all *safe*) changed files -- **never secret-like files**
+and never `git add -A` -- and runs `git commit` locally. It requires explicit confirmation,
+records the commit hash, and **does not push**.
+
+**CLI:**
+
+```
+python -m autoprompt_runner.cli commit review --run-id 12                  # readiness, changes, message
+python -m autoprompt_runner.cli commit propose --run-id 12                 # record a proposal (no commit)
+python -m autoprompt_runner.cli commit apply --run-id 12 --confirm         # create the local commit
+python -m autoprompt_runner.cli commit apply --run-id 12 --confirm \
+  --message "Add signup validation" --file src/app.py --file tests/test_app.py
+python -m autoprompt_runner.cli commit apply --run-id 12 --confirm --allow-failed
+```
+
+`apply` refuses without `--confirm`; `--file` (repeatable) stages only those changed files;
+`--allow-failed` permits committing a FAILED run's changes.
+
+**API.** `GET /commits/runs/{run_id}/review` returns the review, `POST
+/commits/runs/{run_id}/propose` records a proposal, `POST /commits/runs/{run_id}/apply` creates
+the commit, and `GET /commits/runs/{run_id}` lists a run's commit records. Apply requires
+`{"confirm": true}` (**400** otherwise), returns **400** when there is nothing to commit,
+**409** when readiness blockers exist, and **404** for a missing run.
+
+```
+curl http://127.0.0.1:8000/commits/runs/12/review
+curl -X POST http://127.0.0.1:8000/commits/runs/12/apply \
+  -H "Content-Type: application/json" \
+  -d '{"confirm":true,"message":null,"files":[],"allow_failed":false}'
+```
+
+In the **web UI**, the run detail has a *Local commit* panel: it shows readiness, the changed
+files (with checkboxes to exclude some), the diff stat, blockers, an **editable** commit
+message, and the last commit result, with *Refresh review* / *Propose* / *Apply commit* buttons.
+Apply requires checking a **Confirm** box and clearly warns *"This creates a local Git commit
+only. It does not push."* The run detail reloads after a commit.
+
+**Limitations.**
+
+- **Local commit only** -- there is **no push**, **no pull request**, and **no release**.
+- **No automatic commit** -- it always requires explicit confirmation.
+- **No secret-like file staging** -- such files are a blocker, never staged.
+- Git only, on the explicit commit path: the tool runs only `git add -- <files>` and
+  `git commit`; it never runs reset / clean / checkout / merge / rebase / push / pull.
+
 ## Search
 
 As run history grows it gets hard to find a previous run, the log of an error, a
@@ -1412,6 +1475,15 @@ curl -X POST http://127.0.0.1:8000/checkpoints/3/rollback \
   -H "Content-Type: application/json" -d '{"confirm":true,"force":false}'
 ```
 
+Local commit workflow (see *Local commit workflow* above):
+
+```
+curl http://127.0.0.1:8000/commits/runs/12/review
+curl -X POST http://127.0.0.1:8000/commits/runs/12/propose
+curl -X POST http://127.0.0.1:8000/commits/runs/12/apply \
+  -H "Content-Type: application/json" -d '{"confirm":true,"files":[],"allow_failed":false}'
+```
+
 Interactive docs are served at `/docs` (Swagger UI) and `/redoc`. Errors use standard
 HTTP status codes (400 invalid request, 404 missing project/run/artifact, 409 invalid
 run state) and never leak stack traces or secrets. A frontend is not implemented yet.
@@ -1594,6 +1666,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Local queue + background worker, and run cancellation
 - [x] Crash recovery: worker heartbeat + stale-state reconciliation (CLI / API / web UI)
 - [x] Run checkpoints + explicit Git rollback (CLI / API / web UI)
+- [x] Run result review + explicit local Git commit workflow (CLI / API / web UI)
 - [x] Search across runs, logs, prompts, and artifacts (CLI / API / web UI)
 - [x] Compare two runs (CLI / API / web UI)
 - [x] Prompt chain history view (CLI / API / web UI)

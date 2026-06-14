@@ -271,6 +271,30 @@ class RunCheckpoint:
 
 
 @dataclass
+class RunCommit:
+    """A local-commit record for a run's workspace, persisted in ``run_commits``.
+
+    Tracks an explicit, user-confirmed local Git commit of a successful run's changes.
+    ``status`` is ``PROPOSED`` / ``COMMITTED`` / ``FAILED`` / ``SKIPPED`` (see
+    ``autoprompt_runner.commits``). ``changed_files`` is the newline-joined list of files
+    considered/committed; ``commit_hash`` is set once a commit succeeds. This workflow is
+    **local only** -- it never pushes, opens a PR, or runs a destructive Git command -- and it
+    never stages secret-like files. ``error`` holds a skip/failure reason.
+    """
+
+    id: int
+    run_id: int
+    workspace_path: str
+    status: str
+    commit_hash: Optional[str]
+    commit_message: Optional[str]
+    changed_files: Optional[str]
+    created_at: str
+    committed_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, cancel, checkpoints, config, events, locks, processes, reconcile, safety, storage, templates, worktrees
+from .. import artifacts, cancel, checkpoints, commits, config, events, locks, processes, reconcile, safety, storage, templates, worktrees
 from .. import providers as provider_mgmt
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
@@ -459,6 +459,23 @@ class RunService:
         ``system reconcile`` CLI/API.
         """
         return reconcile.reconcile_stale_state(self.db_path, dry_run=dry_run)
+
+    def build_commit_review(self, run_id: int, allow_failed: bool = False) -> "commits.CommitReview":
+        """Return a read-only review of a run's committable changes (see :mod:`commits`)."""
+        return commits.build_run_commit_review(self.db_path, run_id, allow_failed=allow_failed)
+
+    def commit_run_changes(
+        self,
+        run_id: int,
+        confirm: bool = False,
+        message: Optional[str] = None,
+        files: Optional[List[str]] = None,
+        allow_failed: bool = False,
+    ) -> "commits.CommitResult":
+        """Create an explicit, confirm-gated local Git commit of a run's changes (never pushes)."""
+        return commits.commit_run_changes(
+            self.db_path, run_id, confirm=confirm, message=message, files=files, allow_failed=allow_failed
+        )
 
     def approve_and_continue(self, run_id: int) -> StepExecutionReport:
         """Approve the pending approval and execute the approved next prompt."""

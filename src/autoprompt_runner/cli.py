@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, auth, cancel, chains, checkpoints, compare, export_import, locks, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, auth, cancel, chains, checkpoints, commits, compare, export_import, locks, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -101,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_provider_commands(subparsers)
     _add_recovery_commands(subparsers)
     _add_checkpoint_commands(subparsers)
+    _add_commit_commands(subparsers)
     _add_export_import_commands(subparsers)
     _add_auth_commands(subparsers)
     _add_system_commands(subparsers)
@@ -566,6 +567,36 @@ def _add_checkpoint_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Override the safety refusal when the workspace has changes not created by the run.",
     )
     _add_db_path(rollback_parser)
+
+
+def _add_commit_commands(subparsers: argparse._SubParsersAction) -> None:
+    commit_parser = subparsers.add_parser(
+        "commit", help="Review a run's changes and create a local Git commit (never pushes)."
+    )
+    commit_sub = commit_parser.add_subparsers(dest="commit_command", metavar="subcommand")
+
+    review_parser = commit_sub.add_parser("review", help="Show commit readiness, changes, and a proposed message.")
+    review_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    review_parser.add_argument("--allow-failed", action="store_true", help="Treat a FAILED run as committable.")
+    _add_db_path(review_parser)
+
+    propose_parser = commit_sub.add_parser("propose", help="Record a commit proposal (does not commit).")
+    propose_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    propose_parser.add_argument("--allow-failed", action="store_true", help="Treat a FAILED run as committable.")
+    _add_db_path(propose_parser)
+
+    apply_parser = commit_sub.add_parser(
+        "apply", help="Create a local Git commit of the run's changes (requires --confirm; never pushes)."
+    )
+    apply_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    apply_parser.add_argument("--confirm", action="store_true", help="Required: confirm the local commit.")
+    apply_parser.add_argument("--message", default=None, help="Override the generated commit message.")
+    apply_parser.add_argument(
+        "--file", dest="files", action="append", default=None,
+        help="Stage only this changed file (repeatable); default stages all safe changed files.",
+    )
+    apply_parser.add_argument("--allow-failed", action="store_true", help="Allow committing a FAILED run's changes.")
+    _add_db_path(apply_parser)
 
 
 def _add_export_import_commands(subparsers: argparse._SubParsersAction) -> None:
@@ -1806,6 +1837,96 @@ def _dispatch_checkpoint(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- commit commands ---------------------------------------------------------
+
+
+def _commit_exit(kind: str) -> int:
+    if kind == "not_found":
+        return EXIT_NOT_FOUND
+    if kind == "not_confirmed":
+        return EXIT_USAGE
+    return EXIT_RUN_FAILED  # "blocked" / "no_changes"
+
+
+def cmd_commit_review(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        review = commits.build_run_commit_review(db_path, args.run_id, allow_failed=args.allow_failed)
+    except commits.CommitError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _commit_exit(exc.kind)
+    print(f"Commit review for run #{review.run_id} [{review.run_status}]")
+    print(f"  workspace: {review.workspace_path or '-'}")
+    print(f"  ready:     {review.ready}")
+    print(f"  changed:   {len(review.changed_files)} file(s)")
+    for path in review.changed_files[:50]:
+        print(f"    {path}")
+    if review.git_diff_stat.strip():
+        print("  diff stat:")
+        for line in review.git_diff_stat.strip().splitlines()[-10:]:
+            print(f"    {line}")
+    if review.checkpoint_id is not None:
+        print(f"  checkpoint: #{review.checkpoint_id}")
+    print("  proposed message:")
+    for line in review.proposed_message.splitlines():
+        print(f"    {line}")
+    for warning in review.safety_warnings:
+        print(f"  warning: {warning}")
+    for blocker in review.blockers:
+        print(f"  blocker: {blocker}")
+    return EXIT_OK
+
+
+def cmd_commit_propose(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        record = commits.propose_commit(db_path, args.run_id, allow_failed=args.allow_failed)
+    except commits.CommitError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _commit_exit(exc.kind)
+    print(f"Commit #{record.id} proposed for run #{record.run_id} (status {record.status}).")
+    print("  proposed message:")
+    for line in (record.commit_message or "").splitlines():
+        print(f"    {line}")
+    return EXIT_OK
+
+
+def cmd_commit_apply(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    if not args.confirm:
+        print("error: commit apply requires --confirm (it creates a local Git commit)", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        result = commits.commit_run_changes(
+            db_path, args.run_id, confirm=True, message=args.message,
+            files=args.files, allow_failed=args.allow_failed,
+        )
+    except commits.CommitError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _commit_exit(exc.kind)
+    if result.committed:
+        print(
+            f"Created local commit {(result.commit_hash or '')[:12]} for run #{result.run_id} "
+            f"({len(result.changed_files)} file(s)). Not pushed."
+        )
+        return EXIT_OK
+    print(f"error: commit failed: {result.error}", file=sys.stderr)
+    return EXIT_RUN_FAILED
+
+
+def _dispatch_commit(args: argparse.Namespace) -> int:
+    handlers = {
+        "review": cmd_commit_review,
+        "propose": cmd_commit_propose,
+        "apply": cmd_commit_apply,
+    }
+    handler = handlers.get(getattr(args, "commit_command", None))
+    if handler is None:
+        print("error: commit requires a subcommand: review, propose, apply", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- export / import commands ------------------------------------------------
 
 
@@ -2202,6 +2323,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_recovery(args)
     if args.command == "checkpoint":
         return _dispatch_checkpoint(args)
+    if args.command == "commit":
+        return _dispatch_commit(args)
     if args.command == "export":
         return _dispatch_export(args)
     if args.command == "import":

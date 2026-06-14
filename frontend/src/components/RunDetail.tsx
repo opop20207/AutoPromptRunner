@@ -8,6 +8,7 @@ import { ArtifactList } from "./ArtifactList";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { CancelPanel } from "./CancelPanel";
 import { CheckpointPanel } from "./CheckpointPanel";
+import { CommitPanel } from "./CommitPanel";
 import { ChangedFilesPanel } from "./ChangedFilesPanel";
 import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
@@ -140,6 +141,17 @@ export function RunDetail({
           <div className="subsection">
             <h3>Checkpoints &amp; rollback</h3>
             <CheckpointPanel
+              runId={detail.id}
+              runStatus={detail.status}
+              refreshKey={artifactRefresh}
+              onChanged={onChanged}
+            />
+          </div>
+
+          {/* 4b. Local commit workflow (review changes, create a local Git commit; never pushes) */}
+          <div className="subsection">
+            <h3>Local commit</h3>
+            <CommitPanel
               runId={detail.id}
               runStatus={detail.status}
               refreshKey={artifactRefresh}

@@ -786,6 +786,65 @@ class CheckpointCliTests(unittest.TestCase):
         self.assertIn("subcommand", err.lower())
 
 
+class CommitCliTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+        self.ws = os.path.join(self._tmp.name, "repo")
+        _init_repo(self.ws)  # git repo with README.md == "seed\n" committed
+        self.run_id = storage.create_run(
+            self.db, root_prompt="Add a small feature", provider="mock", max_loops=1,
+            require_approval=False, workspace=self.ws,
+        )
+        storage.update_run_status(self.db, self.run_id, RunStatus.RUNNING.value)
+        storage.update_run_status(self.db, self.run_id, RunStatus.DONE.value)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _change(self):
+        with open(os.path.join(self.ws, "README.md"), "w", encoding="utf-8") as handle:
+            handle.write("CHANGED\n")
+
+    def test_review(self):
+        self._change()
+        code, out, err = run_cli(["commit", "review", "--run-id", str(self.run_id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("ready:", out)
+        self.assertIn("README.md", out)
+
+    def test_propose(self):
+        self._change()
+        code, out, err = run_cli(["commit", "propose", "--run-id", str(self.run_id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("proposed", out.lower())
+        self.assertEqual(storage.get_latest_commit_for_run(self.db, self.run_id).status, "PROPOSED")
+
+    def test_apply_requires_confirm(self):
+        self._change()
+        code, out, err = run_cli(["commit", "apply", "--run-id", str(self.run_id), "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("confirm", err.lower())
+
+    def test_apply_creates_local_commit(self):
+        self._change()
+        code, out, err = run_cli(
+            ["commit", "apply", "--run-id", str(self.run_id), "--confirm", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("local commit", out.lower())
+        self.assertIn("not pushed", out.lower())
+        record = storage.get_latest_commit_for_run(self.db, self.run_id)
+        self.assertEqual(record.status, "COMMITTED")
+        self.assertTrue(record.commit_hash)
+
+    def test_requires_subcommand(self):
+        code, out, err = run_cli(["commit"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("subcommand", err.lower())
+
+
 class ConfigCliTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

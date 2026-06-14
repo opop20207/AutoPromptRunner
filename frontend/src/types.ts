@@ -29,6 +29,7 @@ export const ARTIFACT_TYPES = [
   "stale_lock_expired",
   "stale_queue_job_failed",
   "checkpoint_rollback",
+  "commit",
 ] as const;
 export type ArtifactTypeFilter = (typeof ARTIFACT_TYPES)[number];
 
@@ -423,7 +424,8 @@ export type RunEventType =
   | "stale_lock_expired"
   | "stale_job_failed"
   | "checkpoint_created"
-  | "checkpoint_rolled_back";
+  | "checkpoint_rolled_back"
+  | "commit_committed";
 
 export interface RunEvent {
   id: number;
@@ -608,6 +610,49 @@ export interface RollbackResult {
   restored: boolean;
   target_head?: string | null;
   git_head_after?: string | null;
+  message: string;
+  error?: string | null;
+}
+
+// -- local commit workflow (mirrors autoprompt_runner.commits) --
+
+export type CommitStatus = "PROPOSED" | "COMMITTED" | "FAILED" | "SKIPPED";
+
+export interface CommitReview {
+  run_id: number;
+  run_status: string;
+  workspace_path?: string | null;
+  is_git_repo: boolean;
+  changed_files: string[];
+  git_diff_stat: string;
+  safety_warnings: string[];
+  checkpoint_id?: number | null;
+  proposed_message: string;
+  ready: boolean;
+  blockers: string[];
+}
+
+export interface RunCommit {
+  id: number;
+  run_id: number;
+  workspace_path: string;
+  status: string;
+  commit_hash?: string | null;
+  commit_message?: string | null;
+  changed_files: string[];
+  created_at: string;
+  committed_at?: string | null;
+  error?: string | null;
+}
+
+export interface CommitResult {
+  run_id: number;
+  commit_id?: number | null;
+  status: string;
+  committed: boolean;
+  commit_hash?: string | null;
+  commit_message?: string | null;
+  changed_files: string[];
   message: string;
   error?: string | null;
 }

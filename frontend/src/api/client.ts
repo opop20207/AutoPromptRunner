@@ -22,6 +22,8 @@ import type {
   ExportPayload,
   ExportSummary,
   ImportSummary,
+  CommitResult,
+  CommitReview,
   QueueJob,
   RecoveryAttempt,
   RecoveryListResponse,
@@ -29,6 +31,7 @@ import type {
   RollbackPlan,
   RollbackResult,
   RunCheckpoint,
+  RunCommit,
   RunComparisonResponse,
   RunLock,
   SearchAllResponse,
@@ -276,6 +279,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ confirm, force }),
     }),
+  getCommitReview: (runId: number, allowFailed = false) =>
+    request<CommitReview>(`/commits/runs/${runId}/review${allowFailed ? "?allow_failed=true" : ""}`),
+  proposeCommit: (runId: number, allowFailed = false) =>
+    request<RunCommit>(`/commits/runs/${runId}/propose`, {
+      method: "POST",
+      body: JSON.stringify({ allow_failed: allowFailed }),
+    }),
+  applyCommit: (
+    runId: number,
+    body: { confirm: boolean; message?: string | null; files?: string[]; allow_failed?: boolean },
+  ) => request<CommitResult>(`/commits/runs/${runId}/apply`, { method: "POST", body: JSON.stringify(body) }),
+  listCommits: (runId: number) => request<RunCommit[]>(`/commits/runs/${runId}`),
 };
 
 // Build the SSE live-stream URL for a run. The API token (when stored) is appended as a

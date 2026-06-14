@@ -521,3 +521,53 @@ class RollbackResultResponse(BaseModel):
     git_head_after: Optional[str] = None
     message: str
     error: Optional[str] = None
+
+
+class CommitReviewResponse(BaseModel):
+    run_id: int
+    run_status: str
+    workspace_path: Optional[str] = None
+    is_git_repo: bool
+    changed_files: List[str] = []
+    git_diff_stat: str = ""
+    safety_warnings: List[str] = []
+    checkpoint_id: Optional[int] = None
+    proposed_message: str
+    ready: bool
+    blockers: List[str] = []
+
+
+class CommitRecordResponse(BaseModel):
+    id: int
+    run_id: int
+    workspace_path: str
+    status: str
+    commit_hash: Optional[str] = None
+    commit_message: Optional[str] = None
+    changed_files: List[str] = []
+    created_at: str
+    committed_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+class CommitProposeRequest(BaseModel):
+    allow_failed: bool = False
+
+
+class CommitApplyRequest(BaseModel):
+    confirm: bool = False
+    message: Optional[str] = None
+    files: List[str] = []
+    allow_failed: bool = False
+
+
+class CommitResultResponse(BaseModel):
+    run_id: int
+    commit_id: Optional[int] = None
+    status: str
+    committed: bool
+    commit_hash: Optional[str] = None
+    commit_message: Optional[str] = None
+    changed_files: List[str] = []
+    message: str
+    error: Optional[str] = None

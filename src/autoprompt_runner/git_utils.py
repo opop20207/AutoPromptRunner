@@ -8,6 +8,7 @@ merge, rebase, ...). They never modify the repository, read secrets, or print an
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
@@ -161,7 +162,17 @@ def git_reset_hard(path: str, target_ref: str, confirm: bool = False, timeout_se
     ref = (target_ref or "").strip()
     if not ref or ref.startswith("-"):
         raise ValueError("git_reset_hard requires a valid target ref")
-    argv = ["git", "reset", "--hard", ref]
+    return _run_mutating_git(path, ["reset", "--hard", ref], timeout_seconds)
+
+
+def _run_mutating_git(path: str, args: Sequence[str], timeout_seconds: int) -> GitCommandResult:
+    """Run a mutating ``git <args>`` directly (bypassing the read-only denylist).
+
+    Used only by the small set of guarded write helpers in this module (reset for rollback,
+    add/commit for the local commit workflow). Still never uses a shell. Missing git, timeouts,
+    and OS errors return a non-zero result rather than raising.
+    """
+    argv = ["git", *args]
     try:
         completed = subprocess.run(
             argv,
@@ -179,3 +190,88 @@ def git_reset_hard(path: str, target_ref: str, confirm: bool = False, timeout_se
         return GitCommandResult(_EXIT_TIMEOUT, "", f"git: timed out after {timeout_seconds}s")
     except OSError as exc:
         return GitCommandResult(_EXIT_ERROR, "", f"git: failed: {exc}")
+
+
+# -- local commit helpers ----------------------------------------------------
+# Staging + committing are the only writes here besides rollback's reset. They must be called
+# only from autoprompt_runner.commits (the explicit, confirm-gated commit workflow). They never
+# push, pull, reset, clean, checkout, merge, or rebase.
+
+
+def _validate_relative_file(file: str) -> str:
+    """Return a safe, repo-relative ``file`` token or raise ValueError.
+
+    Rejects empty paths, option-like tokens (leading ``-``), absolute paths, and ``..`` parent
+    traversal so a caller can never stage something outside the workspace or inject a flag.
+    """
+    name = (file or "").strip()
+    if not name or name.startswith("-"):
+        raise ValueError(f"invalid file to stage: {file!r}")
+    if os.path.isabs(name) or name.startswith("/") or name.startswith("\\"):
+        raise ValueError(f"refusing to stage a non-relative path: {file!r}")
+    parts = name.replace("\\", "/").split("/")
+    if ".." in parts:
+        raise ValueError(f"refusing to stage a path with parent traversal: {file!r}")
+    return name
+
+
+def git_add_files(path: str, files: Sequence[str], timeout_seconds: int = 30) -> GitCommandResult:
+    """Stage only the explicitly listed ``files`` (``git add -- <files>``).
+
+    Never stages everything (no ``git add -A`` / ``.``). Each path is validated to be a safe
+    repo-relative file (see :func:`_validate_relative_file`); an empty list is a ValueError. The
+    caller (``autoprompt_runner.commits``) is responsible for excluding secret-like files.
+    """
+    safe = [_validate_relative_file(f) for f in (files or [])]
+    if not safe:
+        raise ValueError("git_add_files requires at least one file to stage")
+    return _run_mutating_git(path, ["add", "--", *safe], timeout_seconds)
+
+
+def git_commit(path: str, message: str, timeout_seconds: int = 30) -> GitCommandResult:
+    """Create a local commit of the staged index (``git commit -m <message>``).
+
+    Commits only what is staged; never uses ``-a`` / ``--all`` and never pushes. The message is
+    passed as a single argument (no shell), so it may be multi-line. A blank message is rejected.
+    """
+    text = (message or "").strip()
+    if not text:
+        raise ValueError("git_commit requires a non-empty message")
+    return _run_mutating_git(path, ["commit", "-m", message], timeout_seconds)
+
+
+def git_get_last_commit_hash(path: str) -> Optional[str]:
+    """Return the current HEAD commit hash (read-only), or ``None`` if unavailable."""
+    return get_git_head(path)
+
+
+def git_has_staged_changes(path: str) -> bool:
+    """Return True if the index has staged changes (read-only ``git diff --cached --quiet``)."""
+    # --quiet implies --exit-code: exit 1 means there ARE staged differences.
+    return run_git_command(path, ["diff", "--cached", "--quiet"]).returncode == 1
+
+
+def _porcelain_files(path: str, predicate) -> List[str]:
+    """Return porcelain-status paths for which ``predicate(index_char, worktree_char)`` is True."""
+    files: List[str] = []
+    for line in get_git_status(path).splitlines():
+        if len(line) < 4:
+            continue
+        index_char, worktree_char = line[0], line[1]
+        entry = line[3:]
+        if " -> " in entry:  # renamed: "old -> new"
+            entry = entry.split(" -> ", 1)[1]
+        entry = entry.strip().strip('"')
+        if entry and predicate(index_char, worktree_char):
+            files.append(entry)
+    return files
+
+
+def git_get_unstaged_changed_files(path: str) -> List[str]:
+    """Return files with unstaged work-tree changes or that are untracked (read-only)."""
+    return _porcelain_files(path, lambda x, y: y != " " or (x == "?" and y == "?"))
+
+
+def git_get_staged_changed_files(path: str) -> List[str]:
+    """Return files with staged (index) changes (read-only)."""
+    return _porcelain_files(path, lambda x, y: x not in (" ", "?"))

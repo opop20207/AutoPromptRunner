@@ -24,6 +24,7 @@ from .models import (
     RecoveryAttempt,
     RunCancellation,
     RunCheckpoint,
+    RunCommit,
     RunLock,
     StoredRun,
     StoredStep,
@@ -69,6 +70,12 @@ CHECKPOINT_CREATED = "CREATED"
 CHECKPOINT_RESTORED = "RESTORED"
 CHECKPOINT_FAILED = "FAILED"
 CHECKPOINT_SKIPPED = "SKIPPED"
+
+# Run-commit statuses (mirrored as constants in autoprompt_runner.commits).
+COMMIT_PROPOSED = "PROPOSED"
+COMMIT_COMMITTED = "COMMITTED"
+COMMIT_FAILED = "FAILED"
+COMMIT_SKIPPED = "SKIPPED"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -288,6 +295,22 @@ CREATE TABLE IF NOT EXISTS run_checkpoints (
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_checkpoints_run ON run_checkpoints (run_id, id);
+
+CREATE TABLE IF NOT EXISTS run_commits (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    workspace_path TEXT NOT NULL,
+    status TEXT NOT NULL,
+    commit_hash TEXT,
+    commit_message TEXT,
+    changed_files TEXT,
+    created_at TEXT NOT NULL,
+    committed_at TEXT,
+    error TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_commits_run ON run_commits (run_id, id);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1835,6 +1858,103 @@ def mark_checkpoint_failed(db_path: str, checkpoint_id: int, error: Optional[str
     update_checkpoint_status(db_path, checkpoint_id, CHECKPOINT_FAILED, restore_error=error)
 
 
+# -- run commits -------------------------------------------------------------
+
+
+def create_commit_record(
+    db_path: str,
+    run_id: int,
+    workspace_path: str,
+    status: str = COMMIT_PROPOSED,
+    commit_message: Optional[str] = None,
+    changed_files: Optional[str] = None,
+    commit_hash: Optional[str] = None,
+    error: Optional[str] = None,
+) -> int:
+    """Insert a run-commit row and return its id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "INSERT INTO run_commits "
+            "(run_id, workspace_path, status, commit_hash, commit_message, changed_files, "
+            "created_at, committed_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, workspace_path, status, commit_hash, commit_message, changed_files,
+             _utcnow_iso(), None, error),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def get_commit_record(db_path: str, commit_id: int) -> Optional[RunCommit]:
+    """Return the commit record with ``commit_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM run_commits WHERE id = ?", (commit_id,)).fetchone()
+        return _row_to_commit(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_latest_commit_for_run(db_path: str, run_id: int) -> Optional[RunCommit]:
+    """Return the most recent commit record for ``run_id`` (highest id), or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM run_commits WHERE run_id = ? ORDER BY id DESC LIMIT 1", (run_id,)
+        ).fetchone()
+        return _row_to_commit(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_commits_for_run(db_path: str, run_id: int) -> List[RunCommit]:
+    """Return all commit records for ``run_id`` ordered by id (ascending)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM run_commits WHERE run_id = ? ORDER BY id ASC", (run_id,)
+        ).fetchall()
+        return [_row_to_commit(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def mark_commit_committed(db_path: str, commit_id: int, commit_hash: str, commit_message: Optional[str] = None) -> None:
+    """Mark a commit record COMMITTED with its hash and committed_at = now."""
+    sets = ["status = ?", "commit_hash = ?", "committed_at = ?", "error = ?"]
+    params: List = [COMMIT_COMMITTED, commit_hash, _utcnow_iso(), None]
+    if commit_message is not None:
+        sets.append("commit_message = ?")
+        params.append(commit_message)
+    params.append(commit_id)
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(f"UPDATE run_commits SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_commit_failed(db_path: str, commit_id: int, error: Optional[str] = None) -> None:
+    """Mark a commit record FAILED, recording ``error``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE run_commits SET status = ?, error = ? WHERE id = ?", (COMMIT_FAILED, error, commit_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # -- export / import ---------------------------------------------------------
 
 # Tables that may be exported/imported (whitelisted so a table name is never interpolated
@@ -2593,4 +2713,19 @@ def _row_to_checkpoint(row: sqlite3.Row) -> RunCheckpoint:
         created_at=row["created_at"],
         restored_at=_opt(row, "restored_at"),
         restore_error=_opt(row, "restore_error"),
+    )
+
+
+def _row_to_commit(row: sqlite3.Row) -> RunCommit:
+    return RunCommit(
+        id=row["id"],
+        run_id=row["run_id"],
+        workspace_path=row["workspace_path"],
+        status=row["status"],
+        commit_hash=_opt(row, "commit_hash"),
+        commit_message=_opt(row, "commit_message"),
+        changed_files=_opt(row, "changed_files"),
+        created_at=row["created_at"],
+        committed_at=_opt(row, "committed_at"),
+        error=_opt(row, "error"),
     )

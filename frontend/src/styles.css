@@ -921,6 +921,60 @@ pre.block.large {
   font-size: 13px;
 }
 
+/* -- local commit workflow -- */
+
+.commit-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 8px;
+}
+
+.commit-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.commit-files {
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.commit-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.commit-diffstat {
+  background: #f3f4f6;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: var(--mono);
+  overflow-x: auto;
+  white-space: pre;
+  margin: 6px 0;
+}
+
+.commit-message-label {
+  display: block;
+  font-size: 13px;
+  margin: 6px 0;
+}
+
+.commit-message {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
 /* -- live log connection mode indicator -- */
 
 .livemode {
