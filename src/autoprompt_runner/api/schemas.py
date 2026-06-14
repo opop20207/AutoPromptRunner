@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -216,3 +216,50 @@ class SearchAllResponse(BaseModel):
     runs: List[SearchRunResult] = []
     steps: List[SearchStepResult] = []
     artifacts: List[SearchArtifactResult] = []
+
+
+class RunComparisonMetadata(BaseModel):
+    id: int
+    status: str
+    provider: str
+    created_at: str
+    root_prompt_preview: str
+    root_prompt: Optional[str] = None
+
+
+class StepComparisonSummary(BaseModel):
+    step_count_a: int
+    step_count_b: int
+    exit_codes_a: List[Optional[int]] = []
+    exit_codes_b: List[Optional[int]] = []
+    failed_steps_a: int
+    failed_steps_b: int
+
+
+class ChangedFilesComparison(BaseModel):
+    only_a: List[str] = []
+    only_b: List[str] = []
+    common: List[str] = []
+    warning: Optional[str] = None
+
+
+class ArtifactTypeCounts(BaseModel):
+    counts: Dict[str, int] = {}
+
+
+class RunComparisonResponse(BaseModel):
+    run_a: RunComparisonMetadata
+    run_b: RunComparisonMetadata
+    same_provider: bool
+    same_status: bool
+    steps: StepComparisonSummary
+    changed_files: ChangedFilesComparison
+    diff_stat_a: str
+    diff_stat_b: str
+    latest_next_prompt_a: str
+    latest_next_prompt_b: str
+    latest_next_prompt_full_a: Optional[str] = None
+    latest_next_prompt_full_b: Optional[str] = None
+    artifact_counts_by_type_a: ArtifactTypeCounts
+    artifact_counts_by_type_b: ArtifactTypeCounts
+    summary: str

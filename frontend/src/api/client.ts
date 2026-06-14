@@ -14,6 +14,7 @@ import type {
   RunLogs,
   RunSummary,
   QueueJob,
+  RunComparisonResponse,
   RunLock,
   SearchAllResponse,
   SearchArtifactResult,
@@ -27,7 +28,7 @@ import type {
 
 const BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
-function queryString(params: Record<string, string | number | undefined | null>): string {
+function queryString(params: Record<string, string | number | boolean | undefined | null>): string {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== null && value !== "") qs.set(key, String(value));
@@ -146,6 +147,12 @@ export const api = {
     request<SearchArtifactResult[]>(`/search/artifacts${queryString(params)}`),
   searchAll: (params: { q?: string; limit?: number; offset?: number }) =>
     request<SearchAllResponse>(`/search/all${queryString(params)}`),
+  compareRuns: (params: {
+    run_a: number;
+    run_b: number;
+    show_prompts?: boolean;
+    show_artifacts?: boolean;
+  }) => request<RunComparisonResponse>(`/compare/runs${queryString(params)}`),
 };
 
 export function errorMessage(err: unknown): string {

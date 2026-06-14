@@ -20,16 +20,19 @@ export function RunDetail({
   runId,
   refreshKey,
   onChanged,
+  onUseAsCompare,
 }: {
   runId: number | null;
   refreshKey: number;
   onChanged: () => void;
+  onUseAsCompare?: (slot: "a" | "b", id: number) => void;
 }) {
   const [detail, setDetail] = useState<RunDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [artifactRefresh, setArtifactRefresh] = useState(0);
   const [selectedArtifact, setSelectedArtifact] = useState<number | null>(null);
+  const [compareNote, setCompareNote] = useState<string | null>(null);
 
   async function load() {
     if (runId === null) {
@@ -51,23 +54,39 @@ export function RunDetail({
 
   useEffect(() => {
     setSelectedArtifact(null);
+    setCompareNote(null);
     void load();
   }, [runId, refreshKey]);
+
+  function pickCompare(slot: "a" | "b") {
+    if (runId === null || !onUseAsCompare) return;
+    onUseAsCompare(slot, runId);
+    setCompareNote(`Saved run #${runId} as compare ${slot.toUpperCase()}.`);
+  }
 
   return (
     <Section
       title="Run Detail"
       actions={
         runId !== null ? (
-          <button onClick={() => void load()} disabled={loading}>
-            Refresh
-          </button>
+          <div className="row-actions">
+            {onUseAsCompare && (
+              <>
+                <button onClick={() => pickCompare("a")}>Use as compare A</button>
+                <button onClick={() => pickCompare("b")}>Use as compare B</button>
+              </>
+            )}
+            <button onClick={() => void load()} disabled={loading}>
+              Refresh
+            </button>
+          </div>
         ) : undefined
       }
     >
       {runId === null && <p className="muted">Select a run from the Runs list to inspect it.</p>}
       {loading && !detail && <p className="muted">Loading…</p>}
       {error && <p className="error">{error}</p>}
+      {compareNote && <p className="ok">{compareNote}</p>}
       {detail && !error && (
         <div className="detail">
           {/* 1. Summary + 2. Current status */}

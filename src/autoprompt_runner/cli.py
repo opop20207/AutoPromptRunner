@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, cancel, locks, queue, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, cancel, compare, locks, queue, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -96,6 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worker_commands(subparsers)
     _add_config_commands(subparsers)
     _add_search_commands(subparsers)
+    _add_compare_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -380,6 +381,23 @@ def _add_search_commands(subparsers: argparse._SubParsersAction) -> None:
     all_parser.add_argument("--limit", type=int, default=50, help="Max results per group (hard cap 200).")
     all_parser.add_argument("--offset", type=int, default=0, help="Result offset for pagination.")
     _add_db_path(all_parser)
+
+
+def _add_compare_commands(subparsers: argparse._SubParsersAction) -> None:
+    compare_parser = subparsers.add_parser("compare", help="Compare two runs (stored content only).")
+    compare_sub = compare_parser.add_subparsers(dest="compare_command", metavar="subcommand")
+
+    runs_parser = compare_sub.add_parser("runs", help="Compare two runs side by side.")
+    runs_parser.add_argument("--run-a", dest="run_a", type=int, required=True, help="First run id.")
+    runs_parser.add_argument("--run-b", dest="run_b", type=int, required=True, help="Second run id.")
+    runs_parser.add_argument(
+        "--show-prompts", action="store_true",
+        help="Print the full root and latest next prompt text (default: compact previews).",
+    )
+    runs_parser.add_argument(
+        "--show-artifacts", action="store_true", help="Print artifact counts by type."
+    )
+    _add_db_path(runs_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -1026,6 +1044,82 @@ def _dispatch_search(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- compare commands --------------------------------------------------------
+
+
+def _fmt_file_list(paths, limit: int = 50) -> str:
+    if not paths:
+        return "(none)"
+    shown = ", ".join(paths[:limit])
+    extra = len(paths) - limit
+    return shown + (f", … (+{extra} more)" if extra > 0 else "")
+
+
+def cmd_compare_runs(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        result = compare.compare_runs(
+            db_path, args.run_a, args.run_b,
+            show_prompts=args.show_prompts, show_artifacts=args.show_artifacts,
+        )
+    except compare.CompareError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND if exc.kind == "not_found" else EXIT_USAGE
+
+    a, b = result.run_a, result.run_b
+    same = lambda flag: "same" if flag else "differ"  # noqa: E731
+    print(f"Run #{a.id} vs Run #{b.id}")
+    print(f"  status:     {a.status} | {b.status}  ({same(result.same_status)})")
+    print(f"  provider:   {a.provider} | {b.provider}  ({same(result.same_provider)})")
+    print(f"  created_at: {a.created_at} | {b.created_at}")
+    print(f"  steps:      {result.steps.step_count_a} | {result.steps.step_count_b}")
+    print(f"  failed:     {result.steps.failed_steps_a} | {result.steps.failed_steps_b}")
+    print(f"  exit codes: {result.steps.exit_codes_a} | {result.steps.exit_codes_b}")
+
+    cf = result.changed_files
+    print("Changed files:")
+    print(f"  only A ({len(cf.only_a)}): {_fmt_file_list(cf.only_a)}")
+    print(f"  only B ({len(cf.only_b)}): {_fmt_file_list(cf.only_b)}")
+    print(f"  common ({len(cf.common)}): {_fmt_file_list(cf.common)}")
+    if cf.warning:
+        print(f"  warning: {cf.warning}")
+
+    print(f"  diff stat A: {_shorten(result.diff_stat_a, 60) or '(none)'}")
+    print(f"  diff stat B: {_shorten(result.diff_stat_b, 60) or '(none)'}")
+
+    if args.show_prompts:
+        print(f"Root prompt A: {a.root_prompt or '(none)'}")
+        print(f"Root prompt B: {b.root_prompt or '(none)'}")
+        print(f"Latest next prompt A: {result.latest_next_prompt_full_a or '(none)'}")
+        print(f"Latest next prompt B: {result.latest_next_prompt_full_b or '(none)'}")
+    else:
+        print(f"Latest next prompt A: {result.latest_next_prompt_a or '(none)'}")
+        print(f"Latest next prompt B: {result.latest_next_prompt_b or '(none)'}")
+
+    if args.show_artifacts:
+        counts_a = result.artifact_counts_by_type_a.counts
+        counts_b = result.artifact_counts_by_type_b.counts
+        print("Artifact counts by type:")
+        print(f"  A: {_fmt_counts(counts_a)}")
+        print(f"  B: {_fmt_counts(counts_b)}")
+
+    print(f"Summary: {result.summary}")
+    return EXIT_OK
+
+
+def _fmt_counts(counts) -> str:
+    if not counts:
+        return "(none)"
+    return ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+
+
+def _dispatch_compare(args: argparse.Namespace) -> int:
+    if getattr(args, "compare_command", None) == "runs":
+        return cmd_compare_runs(args)
+    print("error: compare requires a subcommand: runs", file=sys.stderr)
+    return EXIT_USAGE
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -1329,6 +1423,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_config(args)
     if args.command == "search":
         return _dispatch_search(args)
+    if args.command == "compare":
+        return _dispatch_compare(args)
     if args.command == "run":
         if getattr(args, "run_command", None) == "cancel":
             return cmd_run_cancel(args)

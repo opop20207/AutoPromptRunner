@@ -693,3 +693,18 @@ pre.block.large {
     width: auto;
   }
 }
+
+/* -- run comparison (A vs B side-by-side) -- */
+
+.compare-table td:first-child,
+.compare-table th:first-child {
+  width: 160px;
+}
+
+.compare-table td {
+  vertical-align: middle;
+}
+
+.compare-files p {
+  margin: 0 0 4px;
+}

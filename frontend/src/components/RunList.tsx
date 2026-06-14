@@ -16,10 +16,12 @@ export function RunList({
   refreshKey,
   onSelect,
   onOpenSearch,
+  onOpenCompare,
 }: {
   refreshKey: number;
   onSelect: (id: number) => void;
   onOpenSearch?: () => void;
+  onOpenCompare?: (a: number, b: number) => void;
 }) {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +29,8 @@ export function RunList({
   const [busy, setBusy] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
   const [providerFilter, setProviderFilter] = useState("all");
+  const [compareA, setCompareA] = useState<number | null>(null);
+  const [compareB, setCompareB] = useState<number | null>(null);
 
   async function load() {
     setLoading(true);
@@ -74,6 +78,16 @@ export function RunList({
       actions={
         <div className="row-actions">
           {onOpenSearch && <button onClick={onOpenSearch}>Search</button>}
+          {onOpenCompare && (
+            <button
+              disabled={compareA === null || compareB === null || compareA === compareB}
+              onClick={() => {
+                if (compareA !== null && compareB !== null) onOpenCompare(compareA, compareB);
+              }}
+            >
+              Compare A↔B
+            </button>
+          )}
           <button onClick={() => void load()} disabled={loading}>
             Refresh
           </button>
@@ -102,6 +116,11 @@ export function RunList({
           </select>
         </label>
         <span className="muted">{filtered.length} run(s)</span>
+        {onOpenCompare && (compareA !== null || compareB !== null) && (
+          <span className="muted">
+            compare: A={compareA ?? "—"} B={compareB ?? "—"}
+          </span>
+        )}
       </div>
 
       {error && <p className="error">{error}</p>}
@@ -118,6 +137,7 @@ export function RunList({
               <th>Provider</th>
               <th>Created</th>
               <th>Prompt</th>
+              {onOpenCompare && <th>Compare</th>}
               <th></th>
             </tr>
           </thead>
@@ -132,6 +152,30 @@ export function RunList({
                 <td>{run.provider}</td>
                 <td className="mono">{run.created_at}</td>
                 <td>{shorten(run.prompt)}</td>
+                {onOpenCompare && (
+                  <td>
+                    <div className="row-actions">
+                      <button
+                        className={compareA === run.id ? "primary" : ""}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCompareA(run.id);
+                        }}
+                      >
+                        A
+                      </button>
+                      <button
+                        className={compareB === run.id ? "primary" : ""}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCompareB(run.id);
+                        }}
+                      >
+                        B
+                      </button>
+                    </div>
+                  </td>
+                )}
                 <td>
                   {CANCELLABLE_RUN_STATUSES.includes(run.status) && (
                     <button

@@ -28,6 +28,7 @@ above (or scroll) for the full feature tour; each capability has its own section
 - Git worktree parallel sessions and workspace execution locks
 - Local run queue with a background worker, and run cancellation
 - Search across runs, logs, prompts, and artifacts (SQLite `LIKE`)
+- Compare two runs (metadata, steps, changed files, diff stats, artifacts)
 - Config file + environment overrides
 - Safety checks (blocked commands, secret-file warnings, hard limits)
 
@@ -660,6 +661,61 @@ list has a local "contains" box to narrow already-loaded artifacts without anoth
 fuzzy matching, or natural-language queries); it searches only what has been stored in the
 database (not the working tree); and previews are intentionally short.
 
+## Run comparison
+
+When two runs tackle the same task (a retry, a different provider, a tweaked prompt) it
+helps to see exactly how they differ. **Comparison** loads two runs and reports the
+differences across their stored content: run metadata (status / provider / created_at /
+root prompt), step counts, exit codes and failed-step counts, the changed files (only in
+A, only in B, common), the latest `git_diff_stat`, the latest generated next prompt, and
+artifact counts by type -- plus a one-line summary.
+
+Like search, comparison reads **only stored database content**: it never reads workspace
+files from disk, never calls an external tool or diff engine, does no semantic diffing, and
+never surfaces secret-file contents (only the changed-file *paths* recorded in the
+`changed_files` artifacts). It is deterministic -- the result depends only on the stored
+rows. Missing artifacts never fail a comparison: a run with no `changed_files` artifact
+contributes an empty set and a compact warning, and diff-stat text is returned raw but
+capped. Comparing a run with itself is rejected, as is a missing run id.
+
+CLI (`compare runs`):
+
+```
+python -m autoprompt_runner.cli compare runs --run-a 12 --run-b 15
+python -m autoprompt_runner.cli compare runs --run-a 12 --run-b 15 --show-prompts
+python -m autoprompt_runner.cli compare runs --run-a 12 --run-b 15 --show-artifacts
+```
+
+The default output is compact (statuses, providers, step counts, failed steps, changed
+files only-A / only-B / common, diff-stat previews, and latest next-prompt previews).
+`--show-prompts` adds the full root and latest next-prompt text; `--show-artifacts` adds
+the artifact count by type. A missing run exits non-zero ("not found"); comparing a run
+with itself exits non-zero.
+
+API (`/compare` route group; same local database):
+
+```
+curl "http://127.0.0.1:8000/compare/runs?run_a=12&run_b=15"
+curl "http://127.0.0.1:8000/compare/runs?run_a=12&run_b=15&show_prompts=true&show_artifacts=true"
+```
+
+`GET /compare/runs` (`run_a`, `run_b`, `show_prompts=false`, `show_artifacts=true`) returns
+a `RunComparisonResponse` with grouped run metadata, a step summary, the changed-files
+comparison, diff-stat text, latest next-prompt previews, and artifact counts by type. It
+returns `404` if either run is missing and `400` if `run_a == run_b`; full artifact content
+is never returned.
+
+In the **web UI**, the *Compare* section takes two run ids (typed or picked from a recent-
+runs dropdown), optionally shows full prompts, and renders an A-vs-B summary table, the
+changed-files breakdown (only A / only B / common), side-by-side diff-stat and next-prompt
+blocks, and an artifact-count table -- with buttons to open either run's detail. The *Runs*
+list has per-row **A** / **B** selectors and a **Compare A↔B** button, and a run's detail
+view has **Use as compare A** / **Use as compare B** shortcuts.
+
+**Limitations.** Compares only stored artifacts and step rows (not the working tree); no
+semantic diff and no external diff engine; the changed-file comparison is set-based on the
+recorded paths; and diff-stat text is raw and length-capped.
+
 ## Claude Code provider
 
 The `claude-code` provider runs the real Claude Code CLI as a subprocess.
@@ -764,8 +820,8 @@ A minimal React + Vite + TypeScript **dashboard** lives in `frontend/` (see
 [frontend/README.md](frontend/README.md)). It is a thin, **local-first and unauthenticated**
 shell over the HTTP API -- no router, no state library, no UI framework. A left **sidebar**
 navigates between sections with simple local state (no routing): **Overview**,
-**Projects**, **Templates**, **Worktrees**, **New Run**, **Runs**, **Search**, **Queue**,
-and -- once a run is open -- **Run Detail**. The active section is highlighted.
+**Projects**, **Templates**, **Worktrees**, **New Run**, **Runs**, **Search**, **Compare**,
+**Queue**, and -- once a run is open -- **Run Detail**. The active section is highlighted.
 
 - **Overview** shows compact cards: backend health, recent-run count, queued / running
   jobs, failed runs, the default and selected project, and a reminder to start a worker
@@ -887,6 +943,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Git worktrees and workspace locks
 - [x] Local queue + background worker, and run cancellation
 - [x] Search across runs, logs, prompts, and artifacts (CLI / API / web UI)
+- [x] Compare two runs (CLI / API / web UI)
 - [x] Config file / environment overrides (`config show` / `validate` / `init`)
 - [x] FastAPI backend and the React/Vite frontend build
 - [x] End-to-end CLI and API flow tests pass

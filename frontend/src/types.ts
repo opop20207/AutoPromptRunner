@@ -209,6 +209,53 @@ export interface SearchAllResponse {
   artifacts: SearchArtifactResult[];
 }
 
+export interface RunComparisonMetadata {
+  id: number;
+  status: string;
+  provider: string;
+  created_at: string;
+  root_prompt_preview: string;
+  root_prompt?: string | null;
+}
+
+export interface StepComparisonSummary {
+  step_count_a: number;
+  step_count_b: number;
+  exit_codes_a: (number | null)[];
+  exit_codes_b: (number | null)[];
+  failed_steps_a: number;
+  failed_steps_b: number;
+}
+
+export interface ChangedFilesComparison {
+  only_a: string[];
+  only_b: string[];
+  common: string[];
+  warning?: string | null;
+}
+
+export interface ArtifactTypeCounts {
+  counts: Record<string, number>;
+}
+
+export interface RunComparisonResponse {
+  run_a: RunComparisonMetadata;
+  run_b: RunComparisonMetadata;
+  same_provider: boolean;
+  same_status: boolean;
+  steps: StepComparisonSummary;
+  changed_files: ChangedFilesComparison;
+  diff_stat_a: string;
+  diff_stat_b: string;
+  latest_next_prompt_a: string;
+  latest_next_prompt_b: string;
+  latest_next_prompt_full_a?: string | null;
+  latest_next_prompt_full_b?: string | null;
+  artifact_counts_by_type_a: ArtifactTypeCounts;
+  artifact_counts_by_type_b: ArtifactTypeCounts;
+  summary: string;
+}
+
 export interface Step {
   id: number;
   loop_index: number;

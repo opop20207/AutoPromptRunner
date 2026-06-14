@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from . import settings as _settings
 from .approvals import ApprovalStatus
@@ -759,6 +759,24 @@ def get_artifact(db_path: str, artifact_id: int) -> Optional[Artifact]:
     try:
         row = conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
         return _row_to_artifact(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def count_artifacts_by_type(db_path: str, run_id: int) -> Dict[str, int]:
+    """Return a ``{type: count}`` map of a run's artifacts.
+
+    Uses a ``GROUP BY`` aggregate so artifact *content* is never loaded -- only the type
+    and a count -- which keeps run comparison cheap and avoids surfacing large output.
+    """
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT type, COUNT(*) AS n FROM artifacts WHERE run_id = ? GROUP BY type ORDER BY type ASC",
+            (run_id,),
+        ).fetchall()
+        return {row["type"]: int(row["n"]) for row in rows}
     finally:
         conn.close()
 

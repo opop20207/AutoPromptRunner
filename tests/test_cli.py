@@ -747,5 +747,54 @@ class SearchCliTests(_DbTestCase):
         self.assertIn("Artifacts (", out)
 
 
+class CompareCliTests(_DbTestCase):
+    def setUp(self):
+        super().setUp()
+        storage.init_db(self.db)
+        self.run_a = storage.create_run(
+            self.db, root_prompt="Fix the failing tests", provider="mock", max_loops=1, require_approval=False
+        )
+        step_a = storage.create_step(
+            self.db, self.run_a, 0, "run tests", "FAILED", exit_code=1, next_prompt="Fix the tests next"
+        )
+        storage.create_artifact(self.db, self.run_a, "changed_files", content="src/app.py", step_id=step_a)
+        self.run_b = storage.create_run(
+            self.db, root_prompt="Update docs", provider="codex", max_loops=1, require_approval=False
+        )
+        storage.create_step(self.db, self.run_b, 0, "edit docs", "DONE", exit_code=0)
+
+    def test_compare_runs(self):
+        code, out, err = run_cli(
+            ["compare", "runs", "--run-a", str(self.run_a), "--run-b", str(self.run_b), "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Run #{self.run_a} vs Run #{self.run_b}", out)
+        self.assertIn("Changed files:", out)
+        self.assertIn("Summary:", out)
+
+    def test_compare_runs_show_artifacts(self):
+        code, out, err = run_cli(
+            ["compare", "runs", "--run-a", str(self.run_a), "--run-b", str(self.run_b),
+             "--show-artifacts", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("Artifact counts by type:", out)
+        self.assertIn("changed_files=1", out)
+
+    def test_compare_runs_missing_run(self):
+        code, out, err = run_cli(
+            ["compare", "runs", "--run-a", str(self.run_a), "--run-b", "9999", "--db-path", self.db]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err.lower())
+
+    def test_compare_same_run_rejected(self):
+        code, out, err = run_cli(
+            ["compare", "runs", "--run-a", str(self.run_a), "--run-b", str(self.run_a), "--db-path", self.db]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("itself", err.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

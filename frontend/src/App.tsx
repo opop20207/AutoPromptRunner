@@ -5,6 +5,7 @@ import { Dashboard } from "./components/Dashboard";
 import { Layout, Section } from "./components/Layout";
 import { ProjectForm } from "./components/ProjectForm";
 import { ProjectList } from "./components/ProjectList";
+import { ComparePanel } from "./components/ComparePanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { RunDetail } from "./components/RunDetail";
 import { RunForm } from "./components/RunForm";
@@ -25,6 +26,8 @@ export default function App() {
   const [detailRefresh, setDetailRefresh] = useState(0);
   const [overviewRefresh, setOverviewRefresh] = useState(0);
   const [selectedRun, setSelectedRun] = useState<number | null>(null);
+  const [compareA, setCompareA] = useState<number | null>(null);
+  const [compareB, setCompareB] = useState<number | null>(null);
   const [runProject, setRunProject] = useState("");
   const [runTemplate, setRunTemplate] = useState("");
   const [runWorktree, setRunWorktree] = useState("");
@@ -51,6 +54,17 @@ export default function App() {
   function openRun(runId: number) {
     setSelectedRun(runId);
     setSection("detail");
+  }
+
+  function openCompare(a: number, b: number) {
+    setCompareA(a);
+    setCompareB(b);
+    setSection("compare");
+  }
+
+  function useAsCompare(slot: "a" | "b", runId: number) {
+    if (slot === "a") setCompareA(runId);
+    else setCompareB(runId);
   }
 
   return (
@@ -112,10 +126,15 @@ export default function App() {
           refreshKey={runRefresh}
           onSelect={openRun}
           onOpenSearch={() => setSection("search")}
+          onOpenCompare={openCompare}
         />
       )}
 
       {section === "search" && <SearchPanel onSelectRun={openRun} />}
+
+      {section === "compare" && (
+        <ComparePanel initialA={compareA} initialB={compareB} onSelectRun={openRun} />
+      )}
 
       {section === "queue" && (
         <Section title="Queue">
@@ -124,7 +143,12 @@ export default function App() {
       )}
 
       {section === "detail" && (
-        <RunDetail runId={selectedRun} refreshKey={detailRefresh} onChanged={onRunChanged} />
+        <RunDetail
+          runId={selectedRun}
+          refreshKey={detailRefresh}
+          onChanged={onRunChanged}
+          onUseAsCompare={useAsCompare}
+        />
       )}
     </Layout>
   );
