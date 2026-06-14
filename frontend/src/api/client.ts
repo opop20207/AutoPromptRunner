@@ -13,6 +13,7 @@ import type {
   RunDetail,
   RunLogs,
   RunSummary,
+  PromptChainResponse,
   QueueJob,
   RunComparisonResponse,
   RunLock,
@@ -153,6 +154,10 @@ export const api = {
     show_prompts?: boolean;
     show_artifacts?: boolean;
   }) => request<RunComparisonResponse>(`/compare/runs${queryString(params)}`),
+  getRunChain: (
+    runId: number,
+    params: { full_prompts?: boolean; include_artifacts?: boolean; errors_only?: boolean } = {},
+  ) => request<PromptChainResponse>(`/chains/runs/${runId}${queryString(params)}`),
 };
 
 export function errorMessage(err: unknown): string {

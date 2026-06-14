@@ -29,6 +29,7 @@ above (or scroll) for the full feature tour; each capability has its own section
 - Local run queue with a background worker, and run cancellation
 - Search across runs, logs, prompts, and artifacts (SQLite `LIKE`)
 - Compare two runs (metadata, steps, changed files, diff stats, artifacts)
+- Prompt chain history timeline (root → step prompts → next prompts, per run)
 - Config file + environment overrides
 - Safety checks (blocked commands, secret-file warnings, hard limits)
 
@@ -716,6 +717,67 @@ view has **Use as compare A** / **Use as compare B** shortcuts.
 semantic diff and no external diff engine; the changed-file comparison is set-based on the
 recorded paths; and diff-stat text is raw and length-capped.
 
+## Prompt chain history
+
+A run is a chain: a root prompt drives the first step, whose result generates the next
+prompt, which (after an approval) drives the next step, and so on. **Prompt chain history**
+reconstructs that chain so you can see exactly how a run evolved -- the root prompt, each
+step's prompt and generated next prompt, the approval decision, the provider result
+(status / exit code), the artifacts captured, and the changed files -- as a single ordered
+timeline.
+
+The chain is built **only from stored run / step / approval / artifact data**: it never
+reads workspace files from disk, never calls an external tool, does no semantic prompt
+analysis, and never surfaces secret-file contents (only changed-file *paths* and artifact
+*counts*). Nodes are ordered by loop index then step id. Missing artifacts or approvals
+never fail chain creation -- they simply contribute empty counts / no approval status. The
+chain is linear per run (there is no stored cross-run branching); previews are compact and
+full prompt text is opt-in.
+
+Each chain node carries: loop index, step id, status, exit code, provider, the prompt and
+next-prompt previews (full text on request), the approval status, artifact counts by type,
+a changed-files preview, and compact stdout/stderr previews. The chain summary adds the run
+status, step count, approval count, failed-step count, total artifact count, and whether an
+approval is pending.
+
+CLI (`chain show`):
+
+```
+python -m autoprompt_runner.cli chain show --run-id 12
+python -m autoprompt_runner.cli chain show --run-id 12 --full-prompts
+python -m autoprompt_runner.cli chain show --run-id 12 --artifacts
+python -m autoprompt_runner.cli chain show --run-id 12 --errors-only
+```
+
+The default output is a compact timeline (loop index, step id, status, exit code, approval
+status, and prompt / next-prompt previews). `--full-prompts` prints the full prompt and
+next-prompt text; `--artifacts` adds the per-node artifact counts (and changed files);
+`--errors-only` shows just the failed nodes. A missing run exits non-zero ("not found").
+
+API (`/chains` route group; same local database):
+
+```
+curl "http://127.0.0.1:8000/chains/runs/12"
+curl "http://127.0.0.1:8000/chains/runs/12?full_prompts=true&include_artifacts=true&errors_only=false"
+```
+
+`GET /chains/runs/{run_id}` (`full_prompts=false`, `include_artifacts=true`,
+`errors_only=false`) returns a `PromptChainResponse` with the chain summary and a
+`chain_nodes` list. It returns `404` if the run is missing; full artifact content is never
+returned (only counts, previews, and changed-file paths).
+
+In the **web UI**, the run detail has a **Prompt chain** section that renders the chain as a
+vertical timeline (no graph library, plain CSS): each node shows the loop index, step id,
+status badge, exit code, approval status, prompt / next-prompt previews, artifact count,
+changed files, and stdout/stderr previews, and expands to reveal the full prompt and next
+prompt (with copy buttons) and the per-type artifact counts. A filter switches between
+**all** / **failed only** / **waiting approval only**, and the *Runs* list has a per-row
+**Chain** shortcut that opens the run detail.
+
+**Limitations.** The chain is built from stored run / step / approval data only (not the
+working tree); it is linear per run (no branch graph) and uses no graph-visualization
+library; there is no semantic prompt analysis; and it performs no file-system reads.
+
 ## Claude Code provider
 
 The `claude-code` provider runs the real Claude Code CLI as a subprocess.
@@ -864,7 +926,8 @@ override it with `VITE_API_BASE_URL`. A production build is `npm run build` (out
 ### Run detail and artifact review
 
 Selecting a run opens a dense detail view: a summary, the **Steps** list (status, exit
-code, timestamps, and stdout/stderr previews), **Changed files** and **Diff stat**
+code, timestamps, and stdout/stderr previews), a **Prompt chain** timeline (see
+[Prompt chain history](#prompt-chain-history)), **Changed files** and **Diff stat**
 panels, an **Artifacts** browser, and an **Artifact viewer**.
 
 - **Artifacts** lists every captured artifact (`git_status_before` / `git_status_after`,
@@ -944,6 +1007,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Local queue + background worker, and run cancellation
 - [x] Search across runs, logs, prompts, and artifacts (CLI / API / web UI)
 - [x] Compare two runs (CLI / API / web UI)
+- [x] Prompt chain history view (CLI / API / web UI)
 - [x] Config file / environment overrides (`config show` / `validate` / `init`)
 - [x] FastAPI backend and the React/Vite frontend build
 - [x] End-to-end CLI and API flow tests pass

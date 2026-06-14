@@ -11,6 +11,7 @@ import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
 import { LiveLogPanel } from "./LiveLogPanel";
 import { LockPanel } from "./LockPanel";
+import { PromptChainPanel } from "./PromptChainPanel";
 import { QueuePanel } from "./QueuePanel";
 import { SafetyPanel } from "./SafetyPanel";
 import { StatusBadge } from "./StatusBadge";
@@ -134,6 +135,12 @@ export function RunDetail({
           <div className="subsection">
             <h3>Steps ({detail.steps.length})</h3>
             <StepList steps={detail.steps} />
+          </div>
+
+          {/* 5b. Prompt chain history (root prompt -> step prompts -> next prompts) */}
+          <div className="subsection">
+            <h3>Prompt chain</h3>
+            <PromptChainPanel runId={detail.id} />
           </div>
 
           {/* 6. Changed files + 7. Diff stat */}

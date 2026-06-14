@@ -263,3 +263,41 @@ class RunComparisonResponse(BaseModel):
     artifact_counts_by_type_a: ArtifactTypeCounts
     artifact_counts_by_type_b: ArtifactTypeCounts
     summary: str
+
+
+class ArtifactTypeCountSummary(BaseModel):
+    counts: Dict[str, int] = {}
+
+
+class PromptChainNode(BaseModel):
+    node_id: str
+    run_id: int
+    step_id: int
+    loop_index: int
+    prompt: Optional[str] = None
+    prompt_preview: str
+    next_prompt: Optional[str] = None
+    next_prompt_preview: str
+    status: str
+    exit_code: Optional[int] = None
+    provider: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    approval_status: Optional[str] = None
+    artifact_counts_by_type: ArtifactTypeCountSummary
+    changed_files_preview: List[str] = []
+    stderr_preview: str = ""
+    stdout_preview: str = ""
+
+
+class PromptChainResponse(BaseModel):
+    run_id: int
+    root_prompt: str
+    provider: str
+    run_status: str
+    step_count: int
+    approval_count: int
+    pending_approval: bool
+    failed_step_count: int
+    total_artifact_count: int
+    chain_nodes: List[PromptChainNode] = []

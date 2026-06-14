@@ -127,6 +127,7 @@ export default function App() {
           onSelect={openRun}
           onOpenSearch={() => setSection("search")}
           onOpenCompare={openCompare}
+          onViewChain={openRun}
         />
       )}
 

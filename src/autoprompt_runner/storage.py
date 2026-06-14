@@ -781,6 +781,29 @@ def count_artifacts_by_type(db_path: str, run_id: int) -> Dict[str, int]:
         conn.close()
 
 
+def count_artifacts_by_type_and_step(db_path: str, run_id: int) -> Dict[Optional[int], Dict[str, int]]:
+    """Return a ``{step_id: {type: count}}`` map of a run's artifacts.
+
+    Like :func:`count_artifacts_by_type` but grouped by step as well, so the prompt-chain
+    view can show per-step artifact counts without loading any artifact *content*. Run-level
+    artifacts (no step) are grouped under the ``None`` key.
+    """
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT step_id, type, COUNT(*) AS n FROM artifacts WHERE run_id = ? "
+            "GROUP BY step_id, type ORDER BY step_id ASC, type ASC",
+            (run_id,),
+        ).fetchall()
+        result: Dict[Optional[int], Dict[str, int]] = {}
+        for row in rows:
+            result.setdefault(row["step_id"], {})[row["type"]] = int(row["n"])
+        return result
+    finally:
+        conn.close()
+
+
 # -- prompt templates --------------------------------------------------------
 
 

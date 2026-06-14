@@ -796,5 +796,48 @@ class CompareCliTests(_DbTestCase):
         self.assertIn("itself", err.lower())
 
 
+class ChainCliTests(_DbTestCase):
+    def setUp(self):
+        super().setUp()
+        storage.init_db(self.db)
+        self.run_id = storage.create_run(
+            self.db, root_prompt="Build it", provider="mock", max_loops=2, require_approval=True
+        )
+        s0 = storage.create_step(self.db, self.run_id, 0, "step zero", "DONE", exit_code=0, next_prompt="go on")
+        storage.create_artifact(self.db, self.run_id, "changed_files", content="src/a.py", step_id=s0)
+        storage.create_approval(self.db, self.run_id, s0, "go on", status="APPROVED")
+        self.s1 = storage.create_step(
+            self.db, self.run_id, 1, "step one", "FAILED", exit_code=1, stderr="boom", next_prompt="fix"
+        )
+
+    def test_chain_show(self):
+        code, out, err = run_cli(["chain", "show", "--run-id", str(self.run_id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Chain for run #{self.run_id}", out)
+        self.assertIn("[loop 0]", out)
+        self.assertIn("[loop 1]", out)
+        self.assertIn("approval: APPROVED", out)
+
+    def test_chain_show_artifacts(self):
+        code, out, err = run_cli(
+            ["chain", "show", "--run-id", str(self.run_id), "--artifacts", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("changed_files=1", out)
+
+    def test_chain_show_errors_only(self):
+        code, out, err = run_cli(
+            ["chain", "show", "--run-id", str(self.run_id), "--errors-only", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("[loop 1]", out)
+        self.assertNotIn("[loop 0]", out)
+
+    def test_chain_show_missing_run(self):
+        code, out, err = run_cli(["chain", "show", "--run-id", "9999", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

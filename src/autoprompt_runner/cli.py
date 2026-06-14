@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, cancel, compare, locks, queue, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, cancel, chains, compare, locks, queue, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -97,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_config_commands(subparsers)
     _add_search_commands(subparsers)
     _add_compare_commands(subparsers)
+    _add_chain_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -398,6 +399,24 @@ def _add_compare_commands(subparsers: argparse._SubParsersAction) -> None:
         "--show-artifacts", action="store_true", help="Print artifact counts by type."
     )
     _add_db_path(runs_parser)
+
+
+def _add_chain_commands(subparsers: argparse._SubParsersAction) -> None:
+    chain_parser = subparsers.add_parser("chain", help="Show a run's prompt chain history.")
+    chain_sub = chain_parser.add_subparsers(dest="chain_command", metavar="subcommand")
+
+    show_parser = chain_sub.add_parser("show", help="Print a run's prompt chain timeline.")
+    show_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    show_parser.add_argument(
+        "--full-prompts", action="store_true", help="Print the full prompt and next prompt text."
+    )
+    show_parser.add_argument(
+        "--artifacts", action="store_true", help="Print artifact counts by type per node."
+    )
+    show_parser.add_argument(
+        "--errors-only", action="store_true", help="Show failed/error nodes only."
+    )
+    _add_db_path(show_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -1120,6 +1139,59 @@ def _dispatch_compare(args: argparse.Namespace) -> int:
     return EXIT_USAGE
 
 
+# -- chain commands ----------------------------------------------------------
+
+
+def cmd_chain_show(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        chain = chains.build_prompt_chain(
+            db_path, args.run_id,
+            full_prompts=args.full_prompts, include_artifacts=args.artifacts, errors_only=args.errors_only,
+        )
+    except chains.ChainError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+
+    pending = " -- pending approval" if chain.pending_approval else ""
+    print(
+        f"Chain for run #{chain.run_id} ({chain.provider}, {chain.run_status}) -- "
+        f"{chain.step_count} step(s), {chain.approval_count} approval(s), "
+        f"{chain.failed_step_count} failed, {chain.total_artifact_count} artifact(s){pending}"
+    )
+    if not chain.chain_nodes:
+        print("  (no failed nodes)" if args.errors_only else "  (no steps yet)")
+        return EXIT_OK
+
+    for node in chain.chain_nodes:
+        exit_str = str(node.exit_code) if node.exit_code is not None else "-"
+        approval = node.approval_status or "-"
+        print(
+            f"  [loop {node.loop_index}] step #{node.step_id}  {node.status:<8} "
+            f"exit {exit_str:<4} approval: {approval}"
+        )
+        if args.full_prompts:
+            print(f"    prompt:      {node.prompt or '(none)'}")
+            print(f"    next prompt: {node.next_prompt or '(none)'}")
+        else:
+            print(f"    prompt:      {node.prompt_preview or '(none)'}")
+            print(f"    next prompt: {node.next_prompt_preview or '(none)'}")
+        if node.stderr_preview:
+            print(f"    stderr:      {node.stderr_preview}")
+        if args.artifacts:
+            print(f"    artifacts:   {_fmt_counts(node.artifact_counts_by_type.counts)}")
+            if node.changed_files_preview:
+                print(f"    changed:     {_fmt_file_list(node.changed_files_preview)}")
+    return EXIT_OK
+
+
+def _dispatch_chain(args: argparse.Namespace) -> int:
+    if getattr(args, "chain_command", None) == "show":
+        return cmd_chain_show(args)
+    print("error: chain requires a subcommand: show", file=sys.stderr)
+    return EXIT_USAGE
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -1425,6 +1497,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_search(args)
     if args.command == "compare":
         return _dispatch_compare(args)
+    if args.command == "chain":
+        return _dispatch_chain(args)
     if args.command == "run":
         if getattr(args, "run_command", None) == "cancel":
             return cmd_run_cancel(args)

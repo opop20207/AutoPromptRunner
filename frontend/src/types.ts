@@ -256,6 +256,44 @@ export interface RunComparisonResponse {
   summary: string;
 }
 
+export interface ArtifactTypeCountSummary {
+  counts: Record<string, number>;
+}
+
+export interface PromptChainNode {
+  node_id: string;
+  run_id: number;
+  step_id: number;
+  loop_index: number;
+  prompt?: string | null;
+  prompt_preview: string;
+  next_prompt?: string | null;
+  next_prompt_preview: string;
+  status: string;
+  exit_code?: number | null;
+  provider: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  approval_status?: string | null;
+  artifact_counts_by_type: ArtifactTypeCountSummary;
+  changed_files_preview: string[];
+  stderr_preview: string;
+  stdout_preview: string;
+}
+
+export interface PromptChainResponse {
+  run_id: number;
+  root_prompt: string;
+  provider: string;
+  run_status: string;
+  step_count: number;
+  approval_count: number;
+  pending_approval: boolean;
+  failed_step_count: number;
+  total_artifact_count: number;
+  chain_nodes: PromptChainNode[];
+}
+
 export interface Step {
   id: number;
   loop_index: number;

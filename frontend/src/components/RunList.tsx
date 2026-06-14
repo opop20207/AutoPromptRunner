@@ -17,11 +17,13 @@ export function RunList({
   onSelect,
   onOpenSearch,
   onOpenCompare,
+  onViewChain,
 }: {
   refreshKey: number;
   onSelect: (id: number) => void;
   onOpenSearch?: () => void;
   onOpenCompare?: (a: number, b: number) => void;
+  onViewChain?: (id: number) => void;
 }) {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -177,18 +179,30 @@ export function RunList({
                   </td>
                 )}
                 <td>
-                  {CANCELLABLE_RUN_STATUSES.includes(run.status) && (
-                    <button
-                      className="danger"
-                      disabled={busy}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void cancel(run.id);
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  )}
+                  <div className="row-actions">
+                    {onViewChain && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onViewChain(run.id);
+                        }}
+                      >
+                        Chain
+                      </button>
+                    )}
+                    {CANCELLABLE_RUN_STATUSES.includes(run.status) && (
+                      <button
+                        className="danger"
+                        disabled={busy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void cancel(run.id);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
