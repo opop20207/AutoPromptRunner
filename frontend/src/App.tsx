@@ -9,6 +9,7 @@ import { ProviderForm } from "./components/ProviderForm";
 import { ProviderHealthPanel } from "./components/ProviderHealthPanel";
 import { ProviderList } from "./components/ProviderList";
 import { ComparePanel } from "./components/ComparePanel";
+import { ExportImportPanel } from "./components/ExportImportPanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { RunDetail } from "./components/RunDetail";
 import { RunForm } from "./components/RunForm";
@@ -168,6 +169,8 @@ export default function App() {
           <QueuePanel refreshKey={runRefresh} onChanged={onRunChanged} />
         </Section>
       )}
+
+      {section === "export-import" && <ExportImportPanel />}
 
       {section === "detail" && (
         <RunDetail

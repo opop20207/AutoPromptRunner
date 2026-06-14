@@ -32,6 +32,7 @@ above (or scroll) for the full feature tour; each capability has its own section
 - Prompt chain history timeline (root → step prompts → next prompts, per run)
 - Provider profiles (configurable command / timeout / args + availability checks)
 - Failure recovery (rule-based recovery prompt + new linked recovery run)
+- Portable JSON export / import (best-effort redaction, non-destructive import)
 - Config file + environment overrides
 - Safety checks (blocked commands, secret-file warnings, hard limits)
 
@@ -925,6 +926,95 @@ marking disabled (unselectable) and unavailable profiles.
 > **Never store secrets in a provider profile.** The `command` and `default_args` are
 > non-secret invocation settings only; credentials belong with the agent CLI's own auth.
 
+## Export and import
+
+AutoPromptRunner can export its local data to a portable **JSON file** and import it back
+into another local database -- useful for backup, moving between machines, or sharing a run
+history. Export covers project profiles, provider profiles, templates, and run history
+(runs, steps, approvals, artifacts, recovery attempts). It reads **only stored database
+content** -- never workspace files, environment variables, or config files -- and uses the
+Python standard library only (no cloud sync).
+
+**Export format** -- a single self-describing JSON object:
+
+```json
+{
+  "format": "autoprompt-runner-export",
+  "version": 1,
+  "exported_at": "...",
+  "source": { "app": "AutoPromptRunner", "schema_version": 1 },
+  "data": {
+    "projects": [], "provider_profiles": [], "templates": [],
+    "runs": [], "steps": [], "approvals": [], "artifacts": [], "recovery_attempts": []
+  }
+}
+```
+
+**Redaction (best-effort, on by default).** Exports do **not** include environment variables
+or config files, and never read workspace files. An artifact whose *path* or *type* looks
+secret-like (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa`, `id_dsa`, `id_ed25519`,
+`secrets.*`, `credentials.*`, `service-account*.json`, `*.p12`, `*.pfx`, or a
+secret/credential/token type) has its content replaced with
+`[REDACTED_BY_AUTOPROMPT_RUNNER_EXPORT]` and flagged. Redaction is best-effort, **not a
+secrecy guarantee** -- exports still include run prompts and step stdout/stderr, so review
+before sharing. Pass `--no-redact` to disable redaction, or `--no-artifact-content` to
+export artifact metadata without any content.
+
+**Import modes.** Import **never deletes existing data**:
+
+- `merge` (default) -- add imported runs/steps/artifacts/recoveries as new rows; an existing
+  project / provider / template (matched by name) is kept (not overwritten).
+- `skip_existing` -- same, and additionally skips a run that already exists (matched by
+  `created_at` + root prompt), so re-importing the same file does not duplicate runs.
+- `replace_templates_only` -- like `merge`, but a template whose name already exists is
+  overwritten by the imported one (providers/projects are still never overwritten).
+
+Imported rows get **new local ids**; run → step → approval → artifact → recovery
+relationships are preserved by remapping the ids. The payload's `format` and `version` are
+validated before import, and an unknown major version is rejected.
+
+CLI:
+
+```
+python -m autoprompt_runner.cli export data --output autoprompt-export.json
+python -m autoprompt_runner.cli export data --output one-run.json --run-id 12 --no-artifact-content
+python -m autoprompt_runner.cli export data --output factory.json --project FactoryColony   # only that project's runs
+python -m autoprompt_runner.cli export summary --input autoprompt-export.json
+python -m autoprompt_runner.cli import data --input autoprompt-export.json --mode merge
+python -m autoprompt_runner.cli import data --input autoprompt-export.json --mode skip_existing
+```
+
+`export data` flags: `--run-id` (repeatable), `--project` (repeatable), `--no-projects`,
+`--no-providers`, `--no-templates`, `--no-artifacts`, `--no-recoveries`,
+`--no-artifact-content`, `--no-redact`. `import data` exits non-zero on an invalid file.
+
+API (`/export-import` route group; no server-side file is written):
+
+```
+curl -X POST http://127.0.0.1:8000/export-import/export \
+  -H "Content-Type: application/json" \
+  -d '{"include_artifacts":true,"redact_sensitive":true,"run_ids":[],"project_names":[]}'
+curl -X POST http://127.0.0.1:8000/export-import/summary -H "Content-Type: application/json" -d '{"payload": { ... }}'
+curl -X POST http://127.0.0.1:8000/export-import/import \
+  -H "Content-Type: application/json" -d '{"payload": { ... }, "mode": "merge"}'
+```
+
+`POST /export-import/export` returns the JSON payload; `POST /export-import/import` validates
+and applies it (returning a compact import summary, `400` on an invalid payload or unknown
+version); `POST /export-import/summary` returns counts without importing.
+
+In the **web UI**, the *Export / Import* section has an export form (include-toggles for
+projects / providers / templates / runs / artifacts / recoveries, plus artifact-content and
+redact-sensitive toggles) that downloads the JSON file, and an import form (file picker,
+mode selector, *Preview summary*, *Import*) that shows the result -- with explicit warnings
+that exports may include prompts / output / artifact content, that redaction is best-effort,
+and not to import untrusted files without review.
+
+**Limitations.** No cloud sync; **no secrecy guarantee** (redaction is best-effort and run
+prompts / output are exported); no workspace file export; and import is **non-destructive**
+(it never deletes existing runs and never overwrites providers/projects, nor templates
+except in `replace_templates_only`).
+
 ## Claude Code provider
 
 The `claude-code` provider runs the real Claude Code CLI as a subprocess.
@@ -1030,8 +1120,8 @@ A minimal React + Vite + TypeScript **dashboard** lives in `frontend/` (see
 shell over the HTTP API -- no router, no state library, no UI framework. A left **sidebar**
 navigates between sections with simple local state (no routing): **Overview**,
 **Projects**, **Templates**, **Worktrees**, **Providers**, **New Run**, **Runs**, **Search**,
-**Compare**, **Queue**, and -- once a run is open -- **Run Detail**. The active section is
-highlighted.
+**Compare**, **Queue**, **Export / Import**, and -- once a run is open -- **Run Detail**. The
+active section is highlighted.
 
 - **Overview** shows compact cards: backend health, recent-run count, queued / running
   jobs, failed runs, the default and selected project, and a reminder to start a worker
@@ -1158,6 +1248,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Prompt chain history view (CLI / API / web UI)
 - [x] Provider profiles / settings management (CLI / API / web UI)
 - [x] Failure recovery workflow (CLI / API / web UI)
+- [x] Export / import of data (CLI / API / web UI)
 - [x] Config file / environment overrides (`config show` / `validate` / `init`)
 - [x] FastAPI backend and the React/Vite frontend build
 - [x] End-to-end CLI and API flow tests pass

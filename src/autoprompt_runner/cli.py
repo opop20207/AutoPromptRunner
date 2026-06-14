@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, cancel, chains, compare, locks, providers, queue, recovery, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, cancel, chains, compare, export_import, locks, providers, queue, recovery, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -100,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_chain_commands(subparsers)
     _add_provider_commands(subparsers)
     _add_recovery_commands(subparsers)
+    _add_export_import_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -504,6 +505,39 @@ def _add_recovery_commands(subparsers: argparse._SubParsersAction) -> None:
     list_parser = recovery_sub.add_parser("list", help="List recovery attempts (optionally for one run).")
     list_parser.add_argument("--run-id", dest="run_id", type=int, default=None, help="Filter by source run id.")
     _add_db_path(list_parser)
+
+
+def _add_export_import_commands(subparsers: argparse._SubParsersAction) -> None:
+    export_parser = subparsers.add_parser("export", help="Export AutoPromptRunner data to a JSON file.")
+    export_sub = export_parser.add_subparsers(dest="export_command", metavar="subcommand")
+
+    data_parser = export_sub.add_parser("data", help="Write a JSON export of projects/templates/providers/runs.")
+    data_parser.add_argument("--output", required=True, help="Path to write the export JSON.")
+    data_parser.add_argument("--run-id", dest="run_id", type=int, action="append", help="Export only this run id (repeatable).")
+    data_parser.add_argument("--project", dest="project", action="append", help="Export only this project's runs (repeatable).")
+    data_parser.add_argument("--no-projects", dest="include_projects", action="store_false", help="Exclude project profiles.")
+    data_parser.add_argument("--no-providers", dest="include_providers", action="store_false", help="Exclude provider profiles.")
+    data_parser.add_argument("--no-templates", dest="include_templates", action="store_false", help="Exclude templates.")
+    data_parser.add_argument("--no-artifacts", dest="include_artifacts", action="store_false", help="Exclude artifacts.")
+    data_parser.add_argument("--no-recoveries", dest="include_recoveries", action="store_false", help="Exclude recovery attempts.")
+    data_parser.add_argument("--no-artifact-content", dest="artifact_content", action="store_false", help="Export artifact metadata without content.")
+    data_parser.add_argument("--no-redact", dest="redact_sensitive", action="store_false", help="Do not redact secret-like artifact content.")
+    _add_db_path(data_parser)
+
+    summary_parser = export_sub.add_parser("summary", help="Print a summary of an export file without importing.")
+    summary_parser.add_argument("--input", required=True, help="Path to an export JSON file.")
+    _add_db_path(summary_parser)
+
+    import_parser = subparsers.add_parser("import", help="Import AutoPromptRunner data from a JSON export.")
+    import_sub = import_parser.add_subparsers(dest="import_command", metavar="subcommand")
+
+    import_data_parser = import_sub.add_parser("data", help="Validate and import a JSON export file.")
+    import_data_parser.add_argument("--input", required=True, help="Path to an export JSON file.")
+    import_data_parser.add_argument(
+        "--mode", default="merge", choices=list(export_import.IMPORT_MODES),
+        help="Import mode: merge (default), skip_existing, or replace_templates_only.",
+    )
+    _add_db_path(import_data_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -1537,6 +1571,85 @@ def _dispatch_recovery(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- export / import commands ------------------------------------------------
+
+
+def _print_export_summary(summary: dict) -> None:
+    counts = summary.get("counts", {})
+    print(
+        f"  format {summary.get('format')} v{summary.get('version')}  "
+        f"redacted={summary.get('redacted')} ({summary.get('redacted_artifacts', 0)} artifact(s))"
+    )
+    print("  " + ", ".join(f"{name}={counts[name]}" for name in counts))
+
+
+def cmd_export_data(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    payload = export_import.build_export_payload(
+        db_path,
+        include_projects=args.include_projects,
+        include_providers=args.include_providers,
+        include_templates=args.include_templates,
+        include_runs=True,
+        include_artifacts=args.include_artifacts,
+        include_recoveries=args.include_recoveries,
+        run_ids=args.run_id,
+        project_names=args.project,
+        artifact_content=args.artifact_content,
+        redact_sensitive=args.redact_sensitive,
+    )
+    export_import.write_export_file(args.output, payload)
+    print(f"Exported to {args.output}")
+    _print_export_summary(export_import.summarize_export(payload))
+    return EXIT_OK
+
+
+def cmd_export_summary(args: argparse.Namespace) -> int:
+    try:
+        payload = export_import.read_export_file(args.input)
+    except export_import.ExportImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUN_FAILED
+    print(f"Export file: {args.input}")
+    _print_export_summary(export_import.summarize_export(payload))
+    try:
+        export_import.validate_export_payload(payload)
+    except export_import.ExportImportError as exc:
+        print(f"  warning: not importable: {exc}")
+    return EXIT_OK
+
+
+def cmd_import_data(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        payload = export_import.read_export_file(args.input)
+        result = export_import.import_export_payload(db_path, payload, mode=args.mode)
+    except export_import.ExportImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_RUN_FAILED
+    print(f"Imported (mode {result['mode']}): {result['imported']} row(s), {result['skipped']} skipped.")
+    for name, entity in result["entities"].items():
+        if entity["imported"] or entity["skipped"]:
+            print(f"  {name}: {entity['imported']} imported, {entity['skipped']} skipped")
+    return EXIT_OK
+
+
+def _dispatch_export(args: argparse.Namespace) -> int:
+    handlers = {"data": cmd_export_data, "summary": cmd_export_summary}
+    handler = handlers.get(getattr(args, "export_command", None))
+    if handler is None:
+        print("error: export requires a subcommand: data, summary", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
+def _dispatch_import(args: argparse.Namespace) -> int:
+    if getattr(args, "import_command", None) == "data":
+        return cmd_import_data(args)
+    print("error: import requires a subcommand: data", file=sys.stderr)
+    return EXIT_USAGE
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -1848,6 +1961,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_provider(args)
     if args.command == "recovery":
         return _dispatch_recovery(args)
+    if args.command == "export":
+        return _dispatch_export(args)
+    if args.command == "import":
+        return _dispatch_import(args)
     if args.command == "run":
         if getattr(args, "run_command", None) == "cancel":
             return cmd_run_cancel(args)

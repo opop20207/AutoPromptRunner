@@ -946,5 +946,45 @@ class RecoveryCliTests(_DbTestCase):
         self.assertIsNotNone(storage.get_recovery_attempt(self.db, rid).recovery_run_id)
 
 
+class ExportImportCliTests(_DbTestCase):
+    def setUp(self):
+        super().setUp()
+        storage.init_db(self.db)
+        storage.create_template(self.db, name="Cont", body="do {{goal}}", tags=["x"])
+        run_id = storage.create_run(
+            self.db, root_prompt="Fix it", provider="mock", max_loops=1, require_approval=False
+        )
+        storage.create_step(self.db, run_id, 0, "run", "FAILED", stderr="boom", exit_code=1)
+        storage.update_run_status(self.db, run_id, RunStatus.FAILED.value)
+        self.out = os.path.join(self.ws, "export.json")
+
+    def test_export_data(self):
+        code, out, err = run_cli(["export", "data", "--output", self.out, "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.exists(self.out))
+        self.assertIn("runs=1", out)
+
+    def test_export_summary(self):
+        run_cli(["export", "data", "--output", self.out, "--db-path", self.db])
+        code, out, err = run_cli(["export", "summary", "--input", self.out, "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("templates=1", out)
+
+    def test_import_data(self):
+        run_cli(["export", "data", "--output", self.out, "--db-path", self.db])
+        dst = os.path.join(self.ws, "dst.db")
+        code, out, err = run_cli(["import", "data", "--input", self.out, "--mode", "merge", "--db-path", dst])
+        self.assertEqual(code, 0, err)
+        self.assertIn("imported", out.lower())
+        self.assertEqual(len(storage.list_runs(dst)), 1)
+
+    def test_import_invalid_file_exits_nonzero(self):
+        bad = os.path.join(self.ws, "bad.json")
+        with open(bad, "w", encoding="utf-8") as handle:
+            handle.write("not json")
+        code, out, err = run_cli(["import", "data", "--input", bad, "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

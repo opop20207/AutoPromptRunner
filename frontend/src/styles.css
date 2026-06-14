@@ -848,3 +848,15 @@ pre.block.large {
   flex-wrap: wrap;
   margin-bottom: 4px;
 }
+
+/* -- export / import warnings -- */
+
+.warn-note {
+  background: #fdf6e9;
+  border: 1px solid #e3c08a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #7a5b1e;
+  margin: 0 0 10px;
+}

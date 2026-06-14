@@ -367,3 +367,47 @@ class RecoveryExecuteRequest(BaseModel):
 
 class RecoveryListResponse(BaseModel):
     recoveries: List[RecoveryAttemptResponse] = []
+
+
+class ExportRequest(BaseModel):
+    include_projects: bool = True
+    include_providers: bool = True
+    include_templates: bool = True
+    include_runs: bool = True
+    include_artifacts: bool = True
+    include_recoveries: bool = True
+    run_ids: List[int] = []
+    project_names: List[str] = []
+    artifact_content: bool = True
+    redact_sensitive: bool = True
+
+
+class ExportPayloadResponse(BaseModel):
+    format: str
+    version: int
+    exported_at: str
+    source: Dict[str, object] = {}
+    data: Dict[str, list] = {}
+    redacted: bool = False
+    redacted_artifacts: int = 0
+
+
+class ImportRequest(BaseModel):
+    payload: Dict[str, object] = {}
+    mode: str = "merge"
+
+
+class ImportSummaryResponse(BaseModel):
+    mode: str
+    imported: int
+    skipped: int
+    entities: Dict[str, Dict[str, int]] = {}
+
+
+class ExportSummaryResponse(BaseModel):
+    format: Optional[str] = None
+    version: Optional[int] = None
+    exported_at: Optional[str] = None
+    redacted: bool = False
+    redacted_artifacts: int = 0
+    counts: Dict[str, int] = {}

@@ -9,6 +9,7 @@ export type SectionKey =
   | "search"
   | "compare"
   | "queue"
+  | "export-import"
   | "detail";
 
 const SECTIONS: { key: SectionKey; label: string }[] = [
@@ -22,6 +23,7 @@ const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "search", label: "Search" },
   { key: "compare", label: "Compare" },
   { key: "queue", label: "Queue" },
+  { key: "export-import", label: "Export / Import" },
 ];
 
 // Simple local-state navigation -- no routing library. The active section is highlighted;

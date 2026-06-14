@@ -350,6 +350,47 @@ export interface RecoveryListResponse {
   recoveries: RecoveryAttempt[];
 }
 
+export interface ExportOptions {
+  include_projects: boolean;
+  include_providers: boolean;
+  include_templates: boolean;
+  include_runs: boolean;
+  include_artifacts: boolean;
+  include_recoveries: boolean;
+  run_ids?: number[];
+  project_names?: string[];
+  artifact_content: boolean;
+  redact_sensitive: boolean;
+}
+
+export interface ExportPayload {
+  format: string;
+  version: number;
+  exported_at: string;
+  source: Record<string, unknown>;
+  data: Record<string, unknown[]>;
+  redacted?: boolean;
+  redacted_artifacts?: number;
+}
+
+export interface ExportSummary {
+  format?: string | null;
+  version?: number | null;
+  exported_at?: string | null;
+  redacted: boolean;
+  redacted_artifacts: number;
+  counts: Record<string, number>;
+}
+
+export interface ImportSummary {
+  mode: string;
+  imported: number;
+  skipped: number;
+  entities: Record<string, { imported: number; skipped: number }>;
+}
+
+export const IMPORT_MODES = ["merge", "skip_existing", "replace_templates_only"] as const;
+
 export interface Step {
   id: number;
   loop_index: number;

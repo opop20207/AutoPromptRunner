@@ -1669,6 +1669,141 @@ def list_recoveries(db_path: str, limit: int = 50) -> List[RecoveryAttempt]:
         conn.close()
 
 
+# -- export / import ---------------------------------------------------------
+
+# Tables that may be exported/imported (whitelisted so a table name is never interpolated
+# from untrusted input).
+_EXPORTABLE_TABLES = (
+    "projects",
+    "provider_profiles",
+    "templates",
+    "runs",
+    "steps",
+    "approvals",
+    "artifacts",
+    "recovery_attempts",
+)
+
+
+def export_table_rows(db_path: str, table: str) -> List[dict]:
+    """Return every row of an exportable ``table`` as a list of plain dicts (column -> value)."""
+    if table not in _EXPORTABLE_TABLES:
+        raise ValueError(f"table is not exportable: {table}")
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(f"SELECT * FROM {table} ORDER BY id ASC").fetchall()  # noqa: S608 (whitelisted)
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _insert_returning_id(db_path: str, sql: str, params) -> int:
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(sql, params)
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def insert_imported_project(
+    db_path: str, *, name, repo_path, default_provider, default_max_loops,
+    require_approval, timeout_seconds, created_at, updated_at,
+) -> int:
+    """Insert an imported project row (new local id) preserving its stored fields."""
+    return _insert_returning_id(
+        db_path,
+        "INSERT INTO projects (name, repo_path, default_provider, default_max_loops, "
+        "require_approval, timeout_seconds, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, repo_path, default_provider, default_max_loops, require_approval, timeout_seconds,
+         created_at or _utcnow_iso(), updated_at),
+    )
+
+
+def insert_imported_provider_profile(
+    db_path: str, *, name, type, command, default_timeout_seconds, default_args, enabled, created_at, updated_at,
+) -> int:
+    """Insert an imported provider profile row (new local id)."""
+    return _insert_returning_id(
+        db_path,
+        "INSERT INTO provider_profiles (name, type, command, default_timeout_seconds, default_args, "
+        "enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, type, command, default_timeout_seconds, default_args, enabled,
+         created_at or _utcnow_iso(), updated_at or _utcnow_iso()),
+    )
+
+
+def insert_imported_template(db_path: str, *, name, description, body, tags, created_at, updated_at) -> int:
+    """Insert an imported template row (new local id). ``tags`` is the stored text form."""
+    return _insert_returning_id(
+        db_path,
+        "INSERT INTO templates (name, description, body, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, description, body, tags, created_at or _utcnow_iso(), updated_at),
+    )
+
+
+def insert_imported_run(
+    db_path: str, *, project_id, root_prompt, provider, status, max_loops,
+    require_approval, created_at, finished_at, workspace, timeout_seconds,
+) -> int:
+    """Insert an imported run row (new local id), preserving status/timestamps."""
+    return _insert_returning_id(
+        db_path,
+        "INSERT INTO runs (project_id, root_prompt, provider, status, max_loops, require_approval, "
+        "created_at, finished_at, workspace, timeout_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (project_id, root_prompt, provider, status, max_loops, require_approval,
+         created_at or _utcnow_iso(), finished_at, workspace, timeout_seconds),
+    )
+
+
+def insert_imported_step(
+    db_path: str, *, run_id, loop_index, prompt, stdout, stderr, exit_code, status, started_at, finished_at, next_prompt,
+) -> int:
+    """Insert an imported step row (new local id) under a remapped ``run_id``."""
+    return _insert_returning_id(
+        db_path,
+        "INSERT INTO steps (run_id, loop_index, prompt, stdout, stderr, exit_code, status, "
+        "started_at, finished_at, next_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, loop_index, prompt, stdout, stderr, exit_code, status, started_at, finished_at, next_prompt),
+    )
+
+
+def insert_imported_approval(db_path: str, *, run_id, step_id, next_prompt, status, created_at, decided_at) -> int:
+    """Insert an imported approval row (new local id) under remapped ``run_id``/``step_id``."""
+    return _insert_returning_id(
+        db_path,
+        "INSERT INTO approvals (run_id, step_id, next_prompt, status, created_at, decided_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, step_id, next_prompt, status, created_at or _utcnow_iso(), decided_at),
+    )
+
+
+def insert_imported_artifact(db_path: str, *, run_id, step_id, type, content, path, created_at) -> int:
+    """Insert an imported artifact row (new local id) under remapped ``run_id``/``step_id``."""
+    return _insert_returning_id(
+        db_path,
+        "INSERT INTO artifacts (run_id, step_id, type, content, path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, step_id, type, content, path, created_at or _utcnow_iso()),
+    )
+
+
+def insert_imported_recovery(
+    db_path: str, *, source_run_id, recovery_run_id, failed_step_id, status, recovery_prompt,
+    reason, created_at, decided_at, executed_at,
+) -> int:
+    """Insert an imported recovery attempt (new local id) under remapped run/step ids."""
+    return _insert_returning_id(
+        db_path,
+        "INSERT INTO recovery_attempts (source_run_id, recovery_run_id, failed_step_id, status, "
+        "recovery_prompt, reason, created_at, decided_at, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (source_run_id, recovery_run_id, failed_step_id, status, recovery_prompt, reason,
+         created_at or _utcnow_iso(), decided_at, executed_at),
+    )
+
+
 # -- search (SQLite LIKE; no external engine, no disk reads) ------------------
 
 

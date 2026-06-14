@@ -18,6 +18,10 @@ import type {
   ProviderProfile,
   ProviderProfileCreate,
   ProviderProfileUpdate,
+  ExportOptions,
+  ExportPayload,
+  ExportSummary,
+  ImportSummary,
   QueueJob,
   RecoveryAttempt,
   RecoveryListResponse,
@@ -202,6 +206,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ queued }),
     }),
+  exportData: (options: Partial<ExportOptions>) =>
+    request<ExportPayload>("/export-import/export", { method: "POST", body: JSON.stringify(options) }),
+  importData: (payload: unknown, mode: string) =>
+    request<ImportSummary>("/export-import/import", {
+      method: "POST",
+      body: JSON.stringify({ payload, mode }),
+    }),
+  summarizeExport: (payload: unknown) =>
+    request<ExportSummary>("/export-import/summary", { method: "POST", body: JSON.stringify({ payload }) }),
 };
 
 export function errorMessage(err: unknown): string {
