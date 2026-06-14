@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, auth, cancel, chains, checkpoints, commits, compare, export_import, locks, paths, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, app_injection, app_targets, auth, cancel, chains, checkpoints, commits, compare, export_import, locks, paths, prompt_queue, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -102,6 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_recovery_commands(subparsers)
     _add_checkpoint_commands(subparsers)
     _add_commit_commands(subparsers)
+    _add_app_target_commands(subparsers)
+    _add_prompt_queue_commands(subparsers)
     _add_export_import_commands(subparsers)
     _add_auth_commands(subparsers)
     _add_system_commands(subparsers)
@@ -597,6 +599,77 @@ def _add_commit_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     apply_parser.add_argument("--allow-failed", action="store_true", help="Allow committing a FAILED run's changes.")
     _add_db_path(apply_parser)
+
+
+def _add_app_target_commands(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("app-target", help="Manage Claude Code app injection targets.")
+    sub = parser.add_subparsers(dest="app_target_command", metavar="subcommand")
+
+    add_p = sub.add_parser("add", help="Register a Claude Code app target (session/pane).")
+    add_p.add_argument("--name", required=True, help="Unique target name.")
+    add_p.add_argument("--app-name", dest="app_name", default=app_targets.DEFAULT_APP_NAME, help="App name (default: Claude Code).")
+    add_p.add_argument("--session-label", dest="session_label", default=None, help="Human label for the session.")
+    add_p.add_argument("--window-title-hint", dest="window_title_hint", default=None, help="Window title hint (future use).")
+    add_p.add_argument("--project-path", dest="project_path", default=None, help="Associated project path.")
+    add_p.add_argument("--worktree-path", dest="worktree_path", default=None, help="Associated worktree path.")
+    add_p.add_argument("--pane-label", dest="pane_label", default=None, help="Human label for the pane.")
+    add_p.add_argument("--pane-index", dest="pane_index", type=int, default=None, help="Pane index (future use).")
+    add_p.add_argument("--target-mode", dest="target_mode", default=app_targets.TARGET_MODE_ACTIVE_WINDOW_MANUAL,
+                       choices=app_targets.TARGET_MODES, help="Targeting mode (default: active_window_manual).")
+    add_p.add_argument("--submit-mode", dest="submit_mode", default=app_targets.SUBMIT_MODE_PASTE_ONLY,
+                       choices=app_targets.SUBMIT_MODES, help="Submit behavior (default: paste_only).")
+    add_p.add_argument("--no-confirm", dest="confirm_before_inject", action="store_false",
+                       help="Do not require per-injection confirmation for this target.")
+    _add_db_path(add_p)
+
+    list_p = sub.add_parser("list", help="List app targets.")
+    _add_db_path(list_p)
+
+    for name in ("show", "enable", "disable"):
+        p = sub.add_parser(name, help=f"{name.capitalize()} an app target by name.")
+        p.add_argument("--name", required=True, help="Target name.")
+        _add_db_path(p)
+
+
+def _add_prompt_queue_commands(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("prompt-queue", help="Manage Claude Code app prompt queues.")
+    sub = parser.add_subparsers(dest="prompt_queue_command", metavar="subcommand")
+
+    create_p = sub.add_parser("create", help="Create a prompt queue (optionally bound to a target).")
+    create_p.add_argument("--name", required=True, help="Queue name.")
+    create_p.add_argument("--target", default=None, help="App target name to bind.")
+    create_p.add_argument("--description", default=None, help="Optional description.")
+    create_p.add_argument("--project-path", dest="project_path", default=None, help="Optional project path.")
+    _add_db_path(create_p)
+
+    add_p = sub.add_parser("add", help="Add a prompt to a queue (--prompt or --prompt-file).")
+    add_p.add_argument("--queue-id", dest="queue_id", type=int, required=True, help="Queue id.")
+    add_p.add_argument("--title", default=None, help="Prompt title (e.g. Prompt#34).")
+    add_p.add_argument("--prompt", default=None, help="Prompt text.")
+    add_p.add_argument("--prompt-file", dest="prompt_file", default=None, help="Read the prompt from this file (UTF-8).")
+    _add_db_path(add_p)
+
+    show_p = sub.add_parser("show", help="Show a queue, its target, and its prompts.")
+    show_p.add_argument("--queue-id", dest="queue_id", type=int, required=True, help="Queue id.")
+    _add_db_path(show_p)
+
+    inject_p = sub.add_parser("inject-current", help="Inject the current prompt into the app target.")
+    inject_p.add_argument("--queue-id", dest="queue_id", type=int, required=True, help="Queue id.")
+    inject_p.add_argument("--yes", action="store_true", help="Skip the interactive confirmation.")
+    inject_p.add_argument("--restore-clipboard", dest="restore_clipboard", action="store_true",
+                          help="Restore the previous clipboard after a successful paste.")
+    _add_db_path(inject_p)
+
+    for name, helptext in (
+        ("complete-current", "Mark the waiting prompt complete and ready the next."),
+        ("skip-current", "Skip the current prompt and ready the next."),
+        ("pause", "Pause the queue (blocks injection)."),
+        ("resume", "Resume a paused queue."),
+        ("cancel", "Cancel the queue (pending prompts become CANCELLED)."),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        p.add_argument("--queue-id", dest="queue_id", type=int, required=True, help="Queue id.")
+        _add_db_path(p)
 
 
 def _add_export_import_commands(subparsers: argparse._SubParsersAction) -> None:
@@ -1928,6 +2001,272 @@ def _dispatch_commit(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- app-target commands (Claude Code app injection targets) -----------------
+
+
+def _app_target_exit(kind: str) -> int:
+    if kind == "not_found":
+        return EXIT_NOT_FOUND
+    if kind == "invalid":
+        return EXIT_USAGE
+    return EXIT_RUN_FAILED  # duplicate
+
+
+def cmd_app_target_add(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        target = app_targets.create_target(
+            db_path, name=args.name, app_name=args.app_name, target_mode=args.target_mode,
+            submit_mode=args.submit_mode, window_title_hint=args.window_title_hint,
+            session_label=args.session_label, project_path=args.project_path, worktree_path=args.worktree_path,
+            pane_label=args.pane_label, pane_index=args.pane_index, confirm_before_inject=args.confirm_before_inject,
+        )
+    except app_targets.AppTargetError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _app_target_exit(exc.kind)
+    print(f"Created app target #{target.id}: {app_targets.target_summary(target)}")
+    return EXIT_OK
+
+
+def cmd_app_target_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    targets = app_targets.list_targets(db_path)
+    if not targets:
+        print("No app targets.")
+        return EXIT_OK
+    print(f"{'ID':>3}  {'NAME':<28}  {'SESSION':<16}  {'MODE':<20}  {'SUBMIT':<20}  STATUS")
+    for target in targets:
+        print(
+            f"{target.id:>3}  {(target.name or '')[:28]:<28}  {(target.session_label or '-')[:16]:<16}  "
+            f"{target.target_mode:<20}  {target.submit_mode:<20}  {target.status}"
+        )
+    return EXIT_OK
+
+
+def cmd_app_target_show(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    target = app_targets.get_target_by_name(db_path, args.name)
+    if target is None:
+        print(f"error: app target '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    print(f"App target #{target.id}: {target.name}")
+    print(f"  app:         {target.app_name}")
+    print(f"  session:     {target.session_label or '-'}")
+    print(f"  pane:        {target.pane_label or '-'} (index {target.pane_index if target.pane_index is not None else '-'})")
+    print(f"  window hint: {target.window_title_hint or '-'}")
+    print(f"  project:     {paths.safe_display_path(target.project_path) if target.project_path else '-'}")
+    print(f"  worktree:    {paths.safe_display_path(target.worktree_path) if target.worktree_path else '-'}")
+    print(f"  mode:        {target.target_mode}")
+    print(f"  submit:      {target.submit_mode}")
+    print(f"  confirm:     {target.confirm_before_inject}")
+    print(f"  status:      {target.status}")
+    print(f"  last used:   {target.last_used_at or '-'}")
+    return EXIT_OK
+
+
+def _set_app_target_status_by_name(args: argparse.Namespace, enable: bool) -> int:
+    db_path = storage.init_db(args.db_path)
+    target = app_targets.get_target_by_name(db_path, args.name)
+    if target is None:
+        print(f"error: app target '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    updated = app_targets.enable_target(db_path, target.id) if enable else app_targets.disable_target(db_path, target.id)
+    print(f"App target '{updated.name}' is now {updated.status}.")
+    return EXIT_OK
+
+
+def _dispatch_app_target(args: argparse.Namespace) -> int:
+    handlers = {
+        "add": cmd_app_target_add,
+        "list": cmd_app_target_list,
+        "show": cmd_app_target_show,
+        "enable": lambda a: _set_app_target_status_by_name(a, True),
+        "disable": lambda a: _set_app_target_status_by_name(a, False),
+    }
+    handler = handlers.get(getattr(args, "app_target_command", None))
+    if handler is None:
+        print("error: app-target requires a subcommand: add, list, show, enable, disable", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
+# -- prompt-queue commands (Claude Code app prompt queue) --------------------
+
+
+def _prompt_queue_exit(kind: str) -> int:
+    if kind == "not_found":
+        return EXIT_NOT_FOUND
+    if kind == "invalid":
+        return EXIT_USAGE
+    return EXIT_RUN_FAILED  # invalid_state
+
+
+def _confirm(message: str, assume_yes: bool) -> bool:
+    """Return True to proceed: ``--yes`` skips the prompt; non-interactive without --yes refuses."""
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print("error: refusing to proceed without --yes (non-interactive)", file=sys.stderr)
+        return False
+    try:
+        return input(f"{message} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def cmd_prompt_queue_create(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        queue_obj = prompt_queue.create_queue_for_target_name(
+            db_path, name=args.name, target_name=args.target,
+            description=args.description, project_path=args.project_path,
+        )
+    except prompt_queue.PromptQueueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _prompt_queue_exit(exc.kind)
+    bound = f" bound to '{args.target}'" if args.target else ""
+    print(f"Created prompt queue #{queue_obj.id} '{queue_obj.name}'{bound} (status {queue_obj.status}).")
+    return EXIT_OK
+
+
+def cmd_prompt_queue_add(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    text = args.prompt
+    if args.prompt_file:
+        if args.prompt is not None:
+            print("error: provide --prompt or --prompt-file, not both", file=sys.stderr)
+            return EXIT_USAGE
+        try:
+            with open(args.prompt_file, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError as exc:
+            print(f"error: could not read prompt file: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+    if not (text or "").strip():
+        print("error: --prompt or --prompt-file is required (non-empty)", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        prompt_obj = prompt_queue.add_prompt_to_queue(db_path, args.queue_id, prompt=text, title=args.title)
+    except prompt_queue.PromptQueueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _prompt_queue_exit(exc.kind)
+    print(f"Added prompt #{prompt_obj.id} (position {prompt_obj.position}) to queue #{args.queue_id}: "
+          f"{prompt_obj.title or '(untitled)'}")
+    return EXIT_OK
+
+
+def cmd_prompt_queue_show(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        summary = prompt_queue.build_queue_summary(db_path, args.queue_id)
+    except prompt_queue.PromptQueueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _prompt_queue_exit(exc.kind)
+    queue_obj = summary.queue
+    print(f"Queue #{queue_obj.id} '{queue_obj.name}' [{queue_obj.status}]")
+    print(f"  target:  {app_targets.target_summary(summary.target) if summary.target else '(none)'}")
+    print(f"  prompts: {summary.counts.get('total', 0)}")
+    print(f"  {'POS':>3}  {'STATUS':<18}  TITLE")
+    for prompt_obj in summary.prompts:
+        marker = "*" if (summary.current and prompt_obj.id == summary.current.id) else " "
+        title = prompt_obj.title or prompt_queue.preview(prompt_obj.prompt, 40)
+        print(f"  {marker}{prompt_obj.position:>2}  {prompt_obj.status:<18}  {title}")
+    return EXIT_OK
+
+
+def cmd_prompt_queue_inject_current(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        summary = prompt_queue.build_queue_summary(db_path, args.queue_id)
+    except prompt_queue.PromptQueueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _prompt_queue_exit(exc.kind)
+    if summary.target is None:
+        print("error: queue has no app target bound", file=sys.stderr)
+        return EXIT_RUN_FAILED
+    print(f"Target: {app_targets.target_summary(summary.target)}")
+    if summary.current is not None:
+        print(f"Prompt: {summary.current.title or '(untitled)'}  [{summary.current.status}]")
+        print(f"  preview: {prompt_queue.preview(summary.current.prompt)}")
+    print("MANUAL STEP: focus the correct Claude Code input in the app, then confirm.")
+    if not _confirm("Inject this prompt into the active window?", args.yes):
+        print("Aborted (no injection).")
+        return EXIT_OK
+    try:
+        outcome = prompt_queue.inject_current_prompt(
+            db_path, args.queue_id, restore_clipboard_after=args.restore_clipboard
+        )
+    except prompt_queue.PromptQueueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _prompt_queue_exit(exc.kind)
+    except app_injection.InjectionError as exc:
+        print(f"error: injection failed: {exc}", file=sys.stderr)
+        return EXIT_RUN_FAILED
+    print(f"Injected '{outcome.prompt.title or outcome.prompt.id}': {outcome.injection.message}")
+    print(f"Prompt status: {outcome.prompt.status}. Mark complete when Claude Code finishes.")
+    return EXIT_OK
+
+
+def cmd_prompt_queue_complete_current(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        summary = prompt_queue.mark_current_complete(db_path, args.queue_id)
+    except prompt_queue.PromptQueueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _prompt_queue_exit(exc.kind)
+    print(f"Marked complete. Queue #{args.queue_id} is {summary.queue.status}.")
+    if summary.current is not None:
+        print(f"Next: '{summary.current.title or summary.current.id}' [{summary.current.status}]")
+    return EXIT_OK
+
+
+def cmd_prompt_queue_skip_current(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        summary = prompt_queue.skip_current_prompt(db_path, args.queue_id)
+    except prompt_queue.PromptQueueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _prompt_queue_exit(exc.kind)
+    print(f"Skipped. Queue #{args.queue_id} is {summary.queue.status}.")
+    if summary.current is not None:
+        print(f"Next: '{summary.current.title or summary.current.id}' [{summary.current.status}]")
+    return EXIT_OK
+
+
+def _prompt_queue_simple_action(args, action, label) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        summary = action(db_path, args.queue_id)
+    except prompt_queue.PromptQueueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _prompt_queue_exit(exc.kind)
+    print(f"{label}: queue #{args.queue_id} is now {summary.queue.status}.")
+    return EXIT_OK
+
+
+def _dispatch_prompt_queue(args: argparse.Namespace) -> int:
+    handlers = {
+        "create": cmd_prompt_queue_create,
+        "add": cmd_prompt_queue_add,
+        "show": cmd_prompt_queue_show,
+        "inject-current": cmd_prompt_queue_inject_current,
+        "complete-current": cmd_prompt_queue_complete_current,
+        "skip-current": cmd_prompt_queue_skip_current,
+        "pause": lambda a: _prompt_queue_simple_action(a, prompt_queue.pause_queue, "Paused"),
+        "resume": lambda a: _prompt_queue_simple_action(a, prompt_queue.resume_queue, "Resumed"),
+        "cancel": lambda a: _prompt_queue_simple_action(a, prompt_queue.cancel_queue, "Cancelled"),
+    }
+    handler = handlers.get(getattr(args, "prompt_queue_command", None))
+    if handler is None:
+        print(
+            "error: prompt-queue requires a subcommand: create, add, show, inject-current, "
+            "complete-current, skip-current, pause, resume, cancel",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- export / import commands ------------------------------------------------
 
 
@@ -2326,6 +2665,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_checkpoint(args)
     if args.command == "commit":
         return _dispatch_commit(args)
+    if args.command == "app-target":
+        return _dispatch_app_target(args)
+    if args.command == "prompt-queue":
+        return _dispatch_prompt_queue(args)
     if args.command == "export":
         return _dispatch_export(args)
     if args.command == "import":

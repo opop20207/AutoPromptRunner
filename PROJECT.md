@@ -2,7 +2,32 @@
 
 ## One-Line Description
 
-AutoPromptRunner takes a command from a web UI or CLI, sends a prompt to a coding agent such as Claude Code or Codex, collects the result, generates the next prompt, and optionally runs the next step after approval.
+AutoPromptRunner is a local-first **prompt queue controller for the Claude Code desktop app**: it lets users prepare multiple prompts, bind them to a Claude Code app target/session, inject prompts into the app one by one, and manage completion, pause, skip, retry, and cancellation.
+
+## Product Focus
+
+AutoPromptRunner is a local-first prompt queue controller for the Claude Code desktop app. It lets users prepare multiple prompts, bind them to a Claude Code app target/session, inject prompts into the app one by one, and manage completion, pause, skip, retry, and cancellation.
+
+Clarifications:
+
+- AutoPromptRunner **does not replace Claude Code** — it drives the Claude Code app.
+- AutoPromptRunner **does not execute prompts through the Claude Code CLI by default**; the primary workflow is injecting prompts into the Claude Code **app**.
+- AutoPromptRunner controls **prompt queueing and prompt injection** into the Claude Code app.
+- The CLI-based providers (`mock`, `claude-code`, `codex`) and the run/loop engine **remain as secondary / fallback providers** and history, but they are no longer the primary product.
+- The primary workflow is **Claude Code app prompt injection**: the user focuses the correct Claude Code session/pane input, AutoPromptRunner injects the current queued prompt (clipboard + paste), the user marks it complete, and the next prompt is injected.
+
+The app-queue model (current primary):
+
+1. The user registers an **app target** (a specific Claude Code app session/pane).
+2. The user creates a **prompt queue** bound to that target and adds prompts (Prompt#34, #35, #36, …).
+3. The user focuses the correct Claude Code input and triggers **inject-current**; the prompt is copied to the clipboard and (when a keyboard backend is available) pasted/submitted into the active window.
+4. The prompt becomes `WAITING_COMPLETION`; the user marks it complete, and the next prompt becomes ready. Injection is always explicit — never automatic.
+
+The sections below describe the original CLI run/loop engine, which is retained as the secondary/fallback path.
+
+## Original CLI run engine (secondary)
+
+AutoPromptRunner can also take a command from a web UI or CLI, send a prompt to a coding agent such as Claude Code or Codex, collect the result, generate the next prompt, and optionally run the next step after approval.
 
 ## Problem Statement
 

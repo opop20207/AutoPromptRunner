@@ -8,6 +8,19 @@ AutoPromptRunner is a local-first prompt orchestration tool. It drives external 
 
 Run a configured prompt against a target agent, evaluate the result, and optionally generate and run a follow-up prompt under explicit limits. The first target agent is the Claude Code CLI. Future target agents include Codex CLI, ShellRunner, and MockRunner. The tool must support these agents through one shared abstraction rather than agent-specific code paths scattered across the codebase.
 
+## Product Focus Rules (Claude Code App Prompt Queue)
+
+The product has pivoted: the **primary** target is the Claude Code **desktop app**, driven by a prompt queue that injects prompts into a chosen app session/pane. Follow these rules:
+
+- **Prioritize the Claude Code app prompt queue** over the generic provider/run orchestration. The CLI providers remain only as a secondary/fallback path.
+- **Never assume a single Claude Code app session.** Treat the target as a specific app target/session/pane, never just "the Claude Code app".
+- **Always require explicit target confirmation before injection.** Nothing is injected automatically; the user must confirm (focusing the correct input) for each injection.
+- **Prefer manual confirmation over fragile automation.** Do not build automatic window/pane/completion detection unless explicitly requested.
+- **Do not add OCR or image recognition** unless explicitly requested.
+- **Do not silently paste into arbitrary windows.** Injection acts on the active window only, on an explicit user action, after a clear warning.
+- **Preserve the clipboard safely when possible** (back up / restore best-effort), and document any limitation when restore is unreliable.
+- **Keep reports compact.**
+
 ## Non-Goals
 
 - Not a hosted or cloud service; it does not depend on remote orchestration.

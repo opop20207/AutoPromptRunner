@@ -295,6 +295,85 @@ class RunCommit:
 
 
 @dataclass
+class AppTarget:
+    """A Claude Code (desktop app) injection target, persisted in ``app_targets``.
+
+    Identifies a specific app *session/pane*, not just "the Claude Code app", so prompts are
+    injected into the intended place. ``target_mode`` is ``active_window_manual`` /
+    ``window_title_hint`` / ``future_accessibility`` (only ``active_window_manual`` is
+    implemented). ``submit_mode`` is ``paste_only`` / ``paste_and_enter`` /
+    ``paste_and_ctrl_enter``. ``confirm_before_inject`` is stored as 0/1 but exposed as a bool.
+    ``status`` is ``ACTIVE`` / ``DISABLED``. This row carries no secrets.
+    """
+
+    id: int
+    name: str
+    app_name: str
+    window_title_hint: Optional[str]
+    session_label: Optional[str]
+    project_path: Optional[str]
+    worktree_path: Optional[str]
+    pane_label: Optional[str]
+    pane_index: Optional[int]
+    target_mode: str
+    submit_mode: str
+    confirm_before_inject: bool
+    status: str
+    created_at: str
+    updated_at: str
+    last_used_at: Optional[str] = None
+
+
+@dataclass
+class PromptQueue:
+    """A queue of prompts bound to an :class:`AppTarget`, persisted in ``prompt_queues``.
+
+    Prompts are injected into the Claude Code app one at a time (the queue never runs the
+    Claude Code CLI). ``status`` is ``DRAFT`` / ``READY`` / ``RUNNING`` / ``PAUSED`` / ``DONE``
+    / ``FAILED`` / ``CANCELLED`` (see ``autoprompt_runner.prompt_queue``).
+    """
+
+    id: int
+    name: str
+    description: Optional[str]
+    app_target_id: Optional[int]
+    project_path: Optional[str]
+    status: str
+    created_at: str
+    updated_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    paused_at: Optional[str] = None
+
+
+@dataclass
+class QueuedPrompt:
+    """One prompt in a :class:`PromptQueue`, persisted in ``queued_prompts``.
+
+    ``position`` is the 1-based order within the queue. ``status`` is ``PENDING`` /
+    ``READY_TO_INJECT`` / ``INJECTING`` / ``SUBMITTED`` / ``WAITING_COMPLETION`` / ``DONE`` /
+    ``FAILED`` / ``SKIPPED`` / ``CANCELLED``. Only one prompt per queue may be
+    ``WAITING_COMPLETION`` at a time. The lifecycle timestamps record when each transition
+    happened; ``last_error`` holds the most recent injection error, if any.
+    """
+
+    id: int
+    queue_id: int
+    position: int
+    status: str
+    title: Optional[str]
+    prompt: str
+    injected_at: Optional[str] = None
+    submitted_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    skipped_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
+    last_error: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

@@ -1,5 +1,7 @@
 export type SectionKey =
   | "overview"
+  | "app-targets"
+  | "prompt-queues"
   | "projects"
   | "templates"
   | "worktrees"
@@ -15,11 +17,13 @@ export type SectionKey =
 
 const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "overview", label: "Overview" },
+  { key: "app-targets", label: "App Targets" },
+  { key: "prompt-queues", label: "Prompt Queues" },
   { key: "projects", label: "Projects" },
   { key: "templates", label: "Templates" },
   { key: "worktrees", label: "Worktrees" },
   { key: "providers", label: "Providers" },
-  { key: "new-run", label: "New Run" },
+  { key: "new-run", label: "New Run (CLI)" },
   { key: "runs", label: "Runs" },
   { key: "search", label: "Search" },
   { key: "compare", label: "Compare" },

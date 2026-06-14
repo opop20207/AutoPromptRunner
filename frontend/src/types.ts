@@ -656,3 +656,106 @@ export interface CommitResult {
   message: string;
   error?: string | null;
 }
+
+// -- Claude Code app prompt queue controller (the pivot) --
+
+export const TARGET_MODES = ["active_window_manual", "window_title_hint", "future_accessibility"] as const;
+export const SUBMIT_MODES = ["paste_only", "paste_and_enter", "paste_and_ctrl_enter"] as const;
+export type AppTargetStatus = "ACTIVE" | "DISABLED";
+
+export interface AppTarget {
+  id: number;
+  name: string;
+  app_name: string;
+  window_title_hint?: string | null;
+  session_label?: string | null;
+  project_path?: string | null;
+  worktree_path?: string | null;
+  pane_label?: string | null;
+  pane_index?: number | null;
+  target_mode: string;
+  submit_mode: string;
+  confirm_before_inject: boolean;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  last_used_at?: string | null;
+}
+
+export interface AppTargetCreate {
+  name: string;
+  app_name?: string;
+  target_mode?: string;
+  submit_mode?: string;
+  session_label?: string | null;
+  window_title_hint?: string | null;
+  project_path?: string | null;
+  worktree_path?: string | null;
+  pane_label?: string | null;
+  pane_index?: number | null;
+  confirm_before_inject?: boolean;
+}
+
+export type PromptQueueStatus =
+  | "DRAFT" | "READY" | "RUNNING" | "PAUSED" | "DONE" | "FAILED" | "CANCELLED";
+
+export interface PromptQueue {
+  id: number;
+  name: string;
+  description?: string | null;
+  app_target_id?: number | null;
+  project_path?: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  paused_at?: string | null;
+}
+
+export type QueuedPromptStatus =
+  | "PENDING" | "READY_TO_INJECT" | "INJECTING" | "SUBMITTED"
+  | "WAITING_COMPLETION" | "DONE" | "FAILED" | "SKIPPED" | "CANCELLED";
+
+export interface QueuedPrompt {
+  id: number;
+  queue_id: number;
+  position: number;
+  status: string;
+  title?: string | null;
+  prompt: string;
+  injected_at?: string | null;
+  submitted_at?: string | null;
+  completed_at?: string | null;
+  skipped_at?: string | null;
+  cancelled_at?: string | null;
+  last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QueueSummary {
+  queue: PromptQueue;
+  target?: AppTarget | null;
+  prompts: QueuedPrompt[];
+  current?: QueuedPrompt | null;
+  waiting?: QueuedPrompt | null;
+  counts: Record<string, number>;
+}
+
+export interface InjectResult {
+  clipboard_set: boolean;
+  paste_sent: boolean;
+  submit_sent: boolean;
+  clipboard_restored: boolean;
+  automation_available: boolean;
+  submit_mode: string;
+  message: string;
+}
+
+export interface InjectOutcome {
+  summary: QueueSummary;
+  prompt: QueuedPrompt;
+  injection: InjectResult;
+  target_summary: string;
+}

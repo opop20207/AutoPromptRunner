@@ -23,7 +23,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import __version__, checkpoints, locks, storage  # noqa: E402
+from autoprompt_runner import __version__, app_injection, checkpoints, locks, storage  # noqa: E402
 from autoprompt_runner.cli import main  # noqa: E402
 from autoprompt_runner.state import RunStatus  # noqa: E402
 
@@ -870,6 +870,86 @@ class CrossPlatformPathCliTests(unittest.TestCase):
         code, out, err = run_cli(["init-db", "--db-path", db])
         self.assertEqual(code, 0, err)
         self.assertTrue(os.path.exists(db))  # parent dir was created cross-platform
+
+
+class AppQueueCliTests(unittest.TestCase):
+    """CLI for the Claude Code app prompt-queue controller (the pivot)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_app_target_add_list_show(self):
+        code, out, err = run_cli(
+            ["app-target", "add", "--name", "FC Claude", "--session-label", "FactoryColony", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("Created app target", out)
+        code, out, err = run_cli(["app-target", "list", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("FC Claude", out)
+        code, out, err = run_cli(["app-target", "show", "--name", "FC Claude", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("active_window_manual", out)
+
+    def test_app_target_show_missing(self):
+        code, out, err = run_cli(["app-target", "show", "--name", "nope", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err.lower())
+
+    def test_app_target_requires_subcommand(self):
+        code, out, err = run_cli(["app-target"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("subcommand", err.lower())
+
+    def test_prompt_queue_flow(self):
+        run_cli(["app-target", "add", "--name", "FC", "--db-path", self.db])
+        code, out, err = run_cli(["prompt-queue", "create", "--name", "34-36", "--target", "FC", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Created prompt queue", out)
+        code, out, err = run_cli(
+            ["prompt-queue", "add", "--queue-id", "1", "--title", "Prompt#34", "--prompt", "do 34", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("Added prompt", out)
+        code, out, err = run_cli(["prompt-queue", "show", "--queue-id", "1", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Prompt#34", out)
+
+        def stub(prompt, submit_mode="paste_only", restore_clipboard_after=False):
+            return app_injection.InjectionResult(True, True, False, False, True, submit_mode, "pasted")
+
+        with mock.patch("autoprompt_runner.app_injection.inject_prompt_to_active_window", stub):
+            code, out, err = run_cli(["prompt-queue", "inject-current", "--queue-id", "1", "--yes", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("WAITING_COMPLETION", out)
+        code, out, err = run_cli(["prompt-queue", "complete-current", "--queue-id", "1", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("complete", out.lower())
+
+    def test_prompt_queue_add_from_file(self):
+        run_cli(["app-target", "add", "--name", "FC", "--db-path", self.db])
+        run_cli(["prompt-queue", "create", "--name", "q", "--target", "FC", "--db-path", self.db])
+        prompt_file = os.path.join(self._tmp.name, "p34.md")
+        with open(prompt_file, "w", encoding="utf-8") as handle:
+            handle.write("file prompt body")
+        code, out, err = run_cli(
+            ["prompt-queue", "add", "--queue-id", "1", "--title", "P34", "--prompt-file", prompt_file, "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("Added prompt", out)
+
+    def test_prompt_queue_inject_requires_yes_when_noninteractive(self):
+        run_cli(["app-target", "add", "--name", "FC", "--db-path", self.db])
+        run_cli(["prompt-queue", "create", "--name", "q", "--target", "FC", "--db-path", self.db])
+        run_cli(["prompt-queue", "add", "--queue-id", "1", "--prompt", "do it", "--db-path", self.db])
+        # No --yes and stdin is not a tty under the test harness -> refuses (no injection).
+        code, out, err = run_cli(["prompt-queue", "inject-current", "--queue-id", "1", "--db-path", self.db])
+        self.assertIn("--yes", (out + err))
 
 
 class ConfigCliTests(unittest.TestCase):

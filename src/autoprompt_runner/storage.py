@@ -16,10 +16,13 @@ from typing import Dict, List, Optional
 from . import settings as _settings
 from .approvals import ApprovalStatus
 from .models import (
+    AppTarget,
     Approval,
     Artifact,
     Project,
+    PromptQueue,
     ProviderProfile,
+    QueuedPrompt,
     QueueJob,
     RecoveryAttempt,
     RunCancellation,
@@ -76,6 +79,34 @@ COMMIT_PROPOSED = "PROPOSED"
 COMMIT_COMMITTED = "COMMITTED"
 COMMIT_FAILED = "FAILED"
 COMMIT_SKIPPED = "SKIPPED"
+
+# App-target statuses (Claude Code app injection targets; see autoprompt_runner.app_targets).
+APP_TARGET_ACTIVE = "ACTIVE"
+APP_TARGET_DISABLED = "DISABLED"
+
+# Prompt-queue statuses (Claude Code app prompt queue; see autoprompt_runner.prompt_queue).
+PROMPT_QUEUE_DRAFT = "DRAFT"
+PROMPT_QUEUE_READY = "READY"
+PROMPT_QUEUE_RUNNING = "RUNNING"
+PROMPT_QUEUE_PAUSED = "PAUSED"
+PROMPT_QUEUE_DONE = "DONE"
+PROMPT_QUEUE_FAILED = "FAILED"
+PROMPT_QUEUE_CANCELLED = "CANCELLED"
+
+# Queued-prompt statuses.
+QUEUED_PROMPT_PENDING = "PENDING"
+QUEUED_PROMPT_READY_TO_INJECT = "READY_TO_INJECT"
+QUEUED_PROMPT_INJECTING = "INJECTING"
+QUEUED_PROMPT_SUBMITTED = "SUBMITTED"
+QUEUED_PROMPT_WAITING_COMPLETION = "WAITING_COMPLETION"
+QUEUED_PROMPT_DONE = "DONE"
+QUEUED_PROMPT_FAILED = "FAILED"
+QUEUED_PROMPT_SKIPPED = "SKIPPED"
+QUEUED_PROMPT_CANCELLED = "CANCELLED"
+# Queued-prompt statuses that are terminal (a prompt in one of these is "finished").
+_QUEUED_PROMPT_TERMINAL = (
+    QUEUED_PROMPT_DONE, QUEUED_PROMPT_FAILED, QUEUED_PROMPT_SKIPPED, QUEUED_PROMPT_CANCELLED,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -311,6 +342,62 @@ CREATE TABLE IF NOT EXISTS run_commits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_commits_run ON run_commits (run_id, id);
+
+CREATE TABLE IF NOT EXISTS app_targets (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    app_name TEXT NOT NULL,
+    window_title_hint TEXT,
+    session_label TEXT,
+    project_path TEXT,
+    worktree_path TEXT,
+    pane_label TEXT,
+    pane_index INTEGER,
+    target_mode TEXT NOT NULL,
+    submit_mode TEXT NOT NULL,
+    confirm_before_inject INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_used_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_targets_name ON app_targets (name);
+
+CREATE TABLE IF NOT EXISTS prompt_queues (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    app_target_id INTEGER,
+    project_path TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    paused_at TEXT,
+    FOREIGN KEY (app_target_id) REFERENCES app_targets (id)
+);
+
+CREATE TABLE IF NOT EXISTS queued_prompts (
+    id INTEGER PRIMARY KEY,
+    queue_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    title TEXT,
+    prompt TEXT NOT NULL,
+    injected_at TEXT,
+    submitted_at TEXT,
+    completed_at TEXT,
+    skipped_at TEXT,
+    cancelled_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (queue_id) REFERENCES prompt_queues (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_queued_prompts_queue ON queued_prompts (queue_id, position);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1955,6 +2042,416 @@ def mark_commit_failed(db_path: str, commit_id: int, error: Optional[str] = None
         conn.close()
 
 
+# -- app targets (Claude Code app injection targets) -------------------------
+
+_APP_TARGET_FIELDS = (
+    "name", "app_name", "window_title_hint", "session_label", "project_path", "worktree_path",
+    "pane_label", "pane_index", "target_mode", "submit_mode", "confirm_before_inject", "status",
+)
+
+
+def create_app_target(
+    db_path: str,
+    *,
+    name: str,
+    app_name: str,
+    target_mode: str,
+    submit_mode: str,
+    window_title_hint: Optional[str] = None,
+    session_label: Optional[str] = None,
+    project_path: Optional[str] = None,
+    worktree_path: Optional[str] = None,
+    pane_label: Optional[str] = None,
+    pane_index: Optional[int] = None,
+    confirm_before_inject: bool = True,
+    status: str = APP_TARGET_ACTIVE,
+) -> int:
+    """Insert an app target and return its id. ``name`` is unique."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        now = _utcnow_iso()
+        cur = conn.execute(
+            "INSERT INTO app_targets (name, app_name, window_title_hint, session_label, project_path, "
+            "worktree_path, pane_label, pane_index, target_mode, submit_mode, confirm_before_inject, "
+            "status, created_at, updated_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, app_name, window_title_hint, session_label, project_path, worktree_path, pane_label,
+             pane_index, target_mode, submit_mode, 1 if confirm_before_inject else 0, status, now, now, None),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_app_targets(db_path: str) -> List[AppTarget]:
+    """Return all app targets ordered by id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM app_targets ORDER BY id ASC").fetchall()
+        return [_row_to_app_target(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_app_target(db_path: str, target_id: int) -> Optional[AppTarget]:
+    """Return the app target with ``target_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM app_targets WHERE id = ?", (target_id,)).fetchone()
+        return _row_to_app_target(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_app_target_by_name(db_path: str, name: str) -> Optional[AppTarget]:
+    """Return the app target named ``name`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM app_targets WHERE name = ?", (name,)).fetchone()
+        return _row_to_app_target(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def update_app_target(db_path: str, target_id: int, **fields) -> None:
+    """Update the given app-target fields (only known columns) and bump ``updated_at``."""
+    sets, params = [], []
+    for key, value in fields.items():
+        if key not in _APP_TARGET_FIELDS:
+            continue
+        if key == "confirm_before_inject":
+            value = 1 if value else 0
+        sets.append(f"{key} = ?")
+        params.append(value)
+    if not sets:
+        return
+    sets.append("updated_at = ?")
+    params.append(_utcnow_iso())
+    params.append(target_id)
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(f"UPDATE app_targets SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_app_target(db_path: str, target_id: int) -> None:
+    """Delete an app target row (does not touch any queue rows)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute("DELETE FROM app_targets WHERE id = ?", (target_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_app_target_status(db_path: str, target_id: int, status: str) -> None:
+    """Set an app target's status (ACTIVE / DISABLED) and bump ``updated_at``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE app_targets SET status = ?, updated_at = ? WHERE id = ?",
+            (status, _utcnow_iso(), target_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_app_target_used(db_path: str, target_id: int) -> None:
+    """Record that an app target was just used for an injection (sets ``last_used_at``)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE app_targets SET last_used_at = ?, updated_at = ? WHERE id = ?",
+            (_utcnow_iso(), _utcnow_iso(), target_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# -- prompt queues + queued prompts (Claude Code app prompt injection) -------
+
+
+def create_prompt_queue(
+    db_path: str,
+    *,
+    name: str,
+    description: Optional[str] = None,
+    app_target_id: Optional[int] = None,
+    project_path: Optional[str] = None,
+    status: str = PROMPT_QUEUE_DRAFT,
+) -> int:
+    """Insert a prompt queue and return its id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        now = _utcnow_iso()
+        cur = conn.execute(
+            "INSERT INTO prompt_queues (name, description, app_target_id, project_path, status, "
+            "created_at, updated_at, started_at, finished_at, paused_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, description, app_target_id, project_path, status, now, now, None, None, None),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_prompt_queues(db_path: str) -> List[PromptQueue]:
+    """Return all prompt queues, newest first."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM prompt_queues ORDER BY id DESC").fetchall()
+        return [_row_to_prompt_queue(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_prompt_queue(db_path: str, queue_id: int) -> Optional[PromptQueue]:
+    """Return the prompt queue with ``queue_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM prompt_queues WHERE id = ?", (queue_id,)).fetchone()
+        return _row_to_prompt_queue(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def update_prompt_queue_status(
+    db_path: str,
+    queue_id: int,
+    status: str,
+    started_at=_UNSET,
+    finished_at=_UNSET,
+    paused_at=_UNSET,
+) -> None:
+    """Update a prompt queue's status (and optionally started/finished/paused timestamps)."""
+    sets = ["status = ?", "updated_at = ?"]
+    params: List = [status, _utcnow_iso()]
+    for column, value in (("started_at", started_at), ("finished_at", finished_at), ("paused_at", paused_at)):
+        if value is not _UNSET:
+            sets.append(f"{column} = ?")
+            params.append(value)
+    params.append(queue_id)
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(f"UPDATE prompt_queues SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_prompt_queue(db_path: str, queue_id: int) -> None:
+    """Delete a prompt queue and all of its queued prompts."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute("DELETE FROM queued_prompts WHERE queue_id = ?", (queue_id,))
+        conn.execute("DELETE FROM prompt_queues WHERE id = ?", (queue_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def add_queued_prompt(
+    db_path: str,
+    *,
+    queue_id: int,
+    prompt: str,
+    title: Optional[str] = None,
+    position: Optional[int] = None,
+    status: str = QUEUED_PROMPT_PENDING,
+) -> int:
+    """Append (or insert at ``position``) a queued prompt and return its id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        if position is None:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(position), 0) AS m FROM queued_prompts WHERE queue_id = ?", (queue_id,)
+            ).fetchone()
+            position = int(row["m"]) + 1
+        now = _utcnow_iso()
+        cur = conn.execute(
+            "INSERT INTO queued_prompts (queue_id, position, status, title, prompt, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (queue_id, position, status, title, prompt, now, now),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_queued_prompts(db_path: str, queue_id: int) -> List[QueuedPrompt]:
+    """Return a queue's prompts ordered by position."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM queued_prompts WHERE queue_id = ? ORDER BY position ASC, id ASC", (queue_id,)
+        ).fetchall()
+        return [_row_to_queued_prompt(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_queued_prompt(db_path: str, prompt_id: int) -> Optional[QueuedPrompt]:
+    """Return the queued prompt with ``prompt_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM queued_prompts WHERE id = ?", (prompt_id,)).fetchone()
+        return _row_to_queued_prompt(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+_QUEUED_PROMPT_TIMESTAMPS = ("injected_at", "submitted_at", "completed_at", "skipped_at", "cancelled_at")
+
+
+def update_queued_prompt_status(db_path: str, prompt_id: int, status: str, last_error=_UNSET, **timestamps) -> None:
+    """Update a queued prompt's status (and any lifecycle timestamps / last_error)."""
+    sets = ["status = ?", "updated_at = ?"]
+    params: List = [status, _utcnow_iso()]
+    for column in _QUEUED_PROMPT_TIMESTAMPS:
+        if column in timestamps and timestamps[column] is not _UNSET:
+            sets.append(f"{column} = ?")
+            params.append(timestamps[column])
+    if last_error is not _UNSET:
+        sets.append("last_error = ?")
+        params.append(last_error)
+    params.append(prompt_id)
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(f"UPDATE queued_prompts SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_queued_prompt_text(db_path: str, prompt_id: int, title=_UNSET, prompt=_UNSET) -> None:
+    """Edit a queued prompt's ``title`` and/or ``prompt`` text (bumps ``updated_at``)."""
+    sets = ["updated_at = ?"]
+    params: List = [_utcnow_iso()]
+    if title is not _UNSET:
+        sets.append("title = ?")
+        params.append(title)
+    if prompt is not _UNSET:
+        sets.append("prompt = ?")
+        params.append(prompt)
+    if len(sets) == 1:
+        return
+    params.append(prompt_id)
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(f"UPDATE queued_prompts SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reorder_queued_prompt(db_path: str, prompt_id: int, new_position: int) -> None:
+    """Move ``prompt_id`` to ``new_position`` (1-based) and renumber the queue sequentially."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        target = conn.execute("SELECT * FROM queued_prompts WHERE id = ?", (prompt_id,)).fetchone()
+        if target is None:
+            return
+        rows = conn.execute(
+            "SELECT id FROM queued_prompts WHERE queue_id = ? ORDER BY position ASC, id ASC", (target["queue_id"],)
+        ).fetchall()
+        ids = [r["id"] for r in rows if r["id"] != prompt_id]
+        index = max(0, min(int(new_position) - 1, len(ids)))
+        ids.insert(index, prompt_id)
+        now = _utcnow_iso()
+        for pos, pid in enumerate(ids, start=1):
+            conn.execute(
+                "UPDATE queued_prompts SET position = ?, updated_at = ? WHERE id = ?", (pos, now, pid)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_current_prompt(db_path: str, queue_id: int) -> Optional[QueuedPrompt]:
+    """Return the lowest-position non-terminal prompt for ``queue_id`` (the "current" one)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        placeholders = ", ".join("?" for _ in _QUEUED_PROMPT_TERMINAL)
+        row = conn.execute(
+            f"SELECT * FROM queued_prompts WHERE queue_id = ? AND status NOT IN ({placeholders}) "
+            "ORDER BY position ASC, id ASC LIMIT 1",
+            (queue_id, *_QUEUED_PROMPT_TERMINAL),
+        ).fetchone()
+        return _row_to_queued_prompt(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_next_pending_prompt(db_path: str, queue_id: int) -> Optional[QueuedPrompt]:
+    """Return the lowest-position PENDING prompt for ``queue_id`` (or ``None``)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM queued_prompts WHERE queue_id = ? AND status = ? ORDER BY position ASC, id ASC LIMIT 1",
+            (queue_id, QUEUED_PROMPT_PENDING),
+        ).fetchone()
+        return _row_to_queued_prompt(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def mark_prompt_injected(db_path: str, prompt_id: int) -> None:
+    """Mark a queued prompt INJECTING with ``injected_at`` = now."""
+    update_queued_prompt_status(db_path, prompt_id, QUEUED_PROMPT_INJECTING, injected_at=_utcnow_iso())
+
+
+def mark_prompt_submitted(db_path: str, prompt_id: int, waiting: bool = True) -> None:
+    """Record submission (``submitted_at`` = now).
+
+    Transitions to ``WAITING_COMPLETION`` (the gating state the user must clear) by default; pass
+    ``waiting=False`` to leave it at ``SUBMITTED``.
+    """
+    status = QUEUED_PROMPT_WAITING_COMPLETION if waiting else QUEUED_PROMPT_SUBMITTED
+    update_queued_prompt_status(db_path, prompt_id, status, submitted_at=_utcnow_iso())
+
+
+def mark_prompt_complete(db_path: str, prompt_id: int) -> None:
+    """Mark a queued prompt DONE with ``completed_at`` = now."""
+    update_queued_prompt_status(db_path, prompt_id, QUEUED_PROMPT_DONE, completed_at=_utcnow_iso())
+
+
+def skip_queued_prompt(db_path: str, prompt_id: int) -> None:
+    """Mark a queued prompt SKIPPED with ``skipped_at`` = now."""
+    update_queued_prompt_status(db_path, prompt_id, QUEUED_PROMPT_SKIPPED, skipped_at=_utcnow_iso())
+
+
+def cancel_queued_prompt(db_path: str, prompt_id: int) -> None:
+    """Mark a queued prompt CANCELLED with ``cancelled_at`` = now."""
+    update_queued_prompt_status(db_path, prompt_id, QUEUED_PROMPT_CANCELLED, cancelled_at=_utcnow_iso())
+
+
 # -- export / import ---------------------------------------------------------
 
 # Tables that may be exported/imported (whitelisted so a table name is never interpolated
@@ -2728,4 +3225,60 @@ def _row_to_commit(row: sqlite3.Row) -> RunCommit:
         created_at=row["created_at"],
         committed_at=_opt(row, "committed_at"),
         error=_opt(row, "error"),
+    )
+
+
+def _row_to_app_target(row: sqlite3.Row) -> AppTarget:
+    return AppTarget(
+        id=row["id"],
+        name=row["name"],
+        app_name=row["app_name"],
+        window_title_hint=_opt(row, "window_title_hint"),
+        session_label=_opt(row, "session_label"),
+        project_path=_opt(row, "project_path"),
+        worktree_path=_opt(row, "worktree_path"),
+        pane_label=_opt(row, "pane_label"),
+        pane_index=_opt(row, "pane_index"),
+        target_mode=row["target_mode"],
+        submit_mode=row["submit_mode"],
+        confirm_before_inject=bool(row["confirm_before_inject"]),
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        last_used_at=_opt(row, "last_used_at"),
+    )
+
+
+def _row_to_prompt_queue(row: sqlite3.Row) -> PromptQueue:
+    return PromptQueue(
+        id=row["id"],
+        name=row["name"],
+        description=_opt(row, "description"),
+        app_target_id=_opt(row, "app_target_id"),
+        project_path=_opt(row, "project_path"),
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        started_at=_opt(row, "started_at"),
+        finished_at=_opt(row, "finished_at"),
+        paused_at=_opt(row, "paused_at"),
+    )
+
+
+def _row_to_queued_prompt(row: sqlite3.Row) -> QueuedPrompt:
+    return QueuedPrompt(
+        id=row["id"],
+        queue_id=row["queue_id"],
+        position=row["position"],
+        status=row["status"],
+        title=_opt(row, "title"),
+        prompt=row["prompt"],
+        injected_at=_opt(row, "injected_at"),
+        submitted_at=_opt(row, "submitted_at"),
+        completed_at=_opt(row, "completed_at"),
+        skipped_at=_opt(row, "skipped_at"),
+        cancelled_at=_opt(row, "cancelled_at"),
+        last_error=_opt(row, "last_error"),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

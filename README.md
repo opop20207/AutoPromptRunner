@@ -1,62 +1,84 @@
 # AutoPromptRunner
 
-AutoPromptRunner is a local-first prompt orchestration tool. It sends a prompt to a
-coding agent, captures the agent's output, generates the next prompt, and decides
-whether to continue. All state, logs, and configuration stay on the local machine; no
-remote service is required to run it.
+AutoPromptRunner is a local-first **prompt queue controller for the Claude Code desktop
+app**. You prepare multiple prompts (Prompt#34, Prompt#35, Prompt#36, …), bind them to a
+specific Claude Code app **session/pane**, and AutoPromptRunner injects them into the app one
+at a time: you focus the correct Claude Code input, click **Inject**, the prompt is pasted in,
+and after Claude Code finishes you click **Mark Complete** to advance to the next prompt. All
+state stays on the local machine; no remote service is required.
 
-The CLI runs a bounded prompt loop, persists run history to a local SQLite database,
-gates each generated next prompt behind an approval by default, supports reusable
-project profiles, and captures the Git state around each step (read-only) so every run
-records what changed. Three providers are available: `mock` (offline, deterministic),
-`claude-code` (the real Claude Code CLI), and `codex` (the real Codex CLI). The CLI core
-has no third-party runtime dependencies (standard library only); an optional FastAPI
-HTTP backend is available via the `api` extra.
+AutoPromptRunner **does not replace Claude Code** and does not run prompts through the Claude
+Code CLI by default — it drives the Claude Code **app**. The original CLI run/loop engine and
+its `mock` / `claude-code` / `codex` providers remain as a **secondary/fallback** path (see the
+later sections). The core has no required third-party packages; an optional FastAPI backend is
+available via the `api` extra, and full GUI paste automation can optionally use `pyperclip` /
+`pyautogui` (clipboard-only mode works without them).
 
-This is the **v0.1.0** release candidate: a stable, local-first end-to-end tool. See
-[RELEASE_NOTES.md](RELEASE_NOTES.md) and [CHANGELOG.md](CHANGELOG.md) for the release
-summary, and the sections below for the full feature tour.
+## Quickstart — Claude Code app prompt queue
 
-## Quickstart
-
-Requirements: Python >= 3.11 (no third-party packages for the CLI core), and Node.js + npm
-only if you want the web UI. Neither Claude Code nor Codex is required — the offline `mock`
-provider works out of the box.
+Requirements: Python >= 3.11, the Claude Code **desktop app** (open and signed in), and
+Node.js + npm for the web UI. For one-click paste/submit, optionally `pip install pyperclip
+pyautogui`; without them AutoPromptRunner copies each prompt to the clipboard for you to paste.
 
 ```
-# 1. Clone the repository
-git clone https://github.com/opop20207/AutoPromptRunner.git
-cd AutoPromptRunner
+# 1. Start the AutoPromptRunner backend
+pip install -e ".[api]"
+python -m uvicorn autoprompt_runner.api.app:app --reload     # or scripts/dev_api.sh (.ps1 on Windows)
 
-# 2. One-command local setup (venv + backend + frontend deps + config + seed)
-scripts/setup_local.sh
-source .venv/bin/activate          # or: source .venv/Scripts/activate (Windows Git Bash)
+# 2. Start the frontend
+( cd frontend && npm install && npm run dev )                # http://localhost:5173
+```
 
-# 3-5. Start the API, the worker, and the web UI (each in its own terminal)
-scripts/dev_api.sh                 # http://127.0.0.1:8000
-scripts/dev_worker.sh
-scripts/dev_frontend.sh            # http://localhost:5173
+3. Open the **Claude Code desktop app**.
+4. Open the target project / session / pane in Claude Code.
+5. In AutoPromptRunner (web UI → **App Targets**), create an app target naming that session.
+6. Go to **Prompt Queues** and create a queue bound to that app target.
+7. Add your prompts (Prompt#34, Prompt#35, Prompt#36) to the queue.
+8. **Focus the correct Claude Code input** in the app.
+9. Back in AutoPromptRunner, check "I focused the correct Claude Code input" and click
+   **Inject Current Prompt**.
+10. After Claude Code finishes, click **Mark Complete**.
+11. Continue with the next prompt (Inject → Mark Complete) until the queue is done.
 
-# 6. Create a project (point it at a repo; use mock to try it offline)
+The same flow from the **CLI**:
+
+```
+python -m autoprompt_runner.cli app-target add --name "FactoryColony Claude Session" \
+  --app-name "Claude Code" --session-label "FactoryColony" \
+  --target-mode active_window_manual --submit-mode paste_only
+python -m autoprompt_runner.cli prompt-queue create --name "Prompt 34-36" --target "FactoryColony Claude Session"
+python -m autoprompt_runner.cli prompt-queue add --queue-id 1 --title "Prompt#34" --prompt-file prompts/prompt-34.md
+python -m autoprompt_runner.cli prompt-queue add --queue-id 1 --title "Prompt#35" --prompt "..."
+# focus the correct Claude Code input, then:
+python -m autoprompt_runner.cli prompt-queue inject-current --queue-id 1 --yes
+python -m autoprompt_runner.cli prompt-queue complete-current --queue-id 1
+python -m autoprompt_runner.cli prompt-queue show --queue-id 1
+```
+
+**Limitations (first version).**
+
+- **Manual-target injection only** — you must focus the correct Claude Code input before
+  injecting; AutoPromptRunner pastes into whatever window is active.
+- **Multi-pane automatic detection is not implemented** — the target is recorded but not
+  auto-located (`active_window_manual` mode).
+- **Completion detection is manual** — you click Mark Complete; nothing auto-advances.
+- **Clipboard is used for prompt transfer** — the prompt is copied to the clipboard and pasted;
+  the previous clipboard is restored only best-effort (and only when paste automation ran).
+- **No OCR, no browser automation, no cloud sync.**
+- Full paste/submit needs `pyautogui` (and a reliable clipboard needs `pyperclip` on some
+  systems); without them, AutoPromptRunner runs in clipboard-only mode and you paste manually.
+
+Verify a local checkout at any time with `scripts/check_all.sh` (or `check_all.ps1` on Windows)
+and diagnose an environment with `scripts/doctor.sh` (`doctor.ps1`).
+
+The secondary CLI run/loop engine (bounded prompt loop, approval gate, providers, worktrees,
+checkpoints, commits, …) is documented in the sections further below and still works:
+
+```
 python -m autoprompt_runner.cli project add --name demo --repo-path . --provider mock --max-loops 3
-
-# 7. Create a run
 python -m autoprompt_runner.cli run --project demo --prompt "Review this project"
-
-# 8. Approve (or reject) the generated next prompt
-python -m autoprompt_runner.cli approve-next --run-id 1      # or: reject-next --run-id 1
-
-# 9. Inspect the captured artifacts
-python -m autoprompt_runner.cli show-artifacts --run-id 1
-python -m autoprompt_runner.cli show-run --id 1
+python -m autoprompt_runner.cli approve-next --run-id 1
 ```
-
-10. As needed, use **templates** (`template seed` / `run --template ...`), **provider
-profiles** (`provider seed` / `provider add ...`), and **Git worktrees**
-(`worktree create ...` / `run --worktree ...`) — see the sections below.
-
-Verify a local checkout at any time with `scripts/check_all.sh` (the primary release check)
-and diagnose an environment with `scripts/doctor.sh`.
 
 ## v0.1 capabilities
 

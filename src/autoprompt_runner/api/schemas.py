@@ -571,3 +571,135 @@ class CommitResultResponse(BaseModel):
     changed_files: List[str] = []
     message: str
     error: Optional[str] = None
+
+
+# -- Claude Code app targets + prompt queues (the pivot) --
+
+
+class AppTargetResponse(BaseModel):
+    id: int
+    name: str
+    app_name: str
+    window_title_hint: Optional[str] = None
+    session_label: Optional[str] = None
+    project_path: Optional[str] = None
+    worktree_path: Optional[str] = None
+    pane_label: Optional[str] = None
+    pane_index: Optional[int] = None
+    target_mode: str
+    submit_mode: str
+    confirm_before_inject: bool
+    status: str
+    created_at: str
+    updated_at: str
+    last_used_at: Optional[str] = None
+
+
+class AppTargetCreateRequest(BaseModel):
+    name: str
+    app_name: str = "Claude Code"
+    target_mode: str = "active_window_manual"
+    submit_mode: str = "paste_only"
+    window_title_hint: Optional[str] = None
+    session_label: Optional[str] = None
+    project_path: Optional[str] = None
+    worktree_path: Optional[str] = None
+    pane_label: Optional[str] = None
+    pane_index: Optional[int] = None
+    confirm_before_inject: bool = True
+
+
+class AppTargetUpdateRequest(BaseModel):
+    app_name: Optional[str] = None
+    target_mode: Optional[str] = None
+    submit_mode: Optional[str] = None
+    window_title_hint: Optional[str] = None
+    session_label: Optional[str] = None
+    project_path: Optional[str] = None
+    worktree_path: Optional[str] = None
+    pane_label: Optional[str] = None
+    pane_index: Optional[int] = None
+    confirm_before_inject: Optional[bool] = None
+
+
+class PromptQueueResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    app_target_id: Optional[int] = None
+    project_path: Optional[str] = None
+    status: str
+    created_at: str
+    updated_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    paused_at: Optional[str] = None
+
+
+class PromptQueueCreateRequest(BaseModel):
+    name: str
+    app_target_id: Optional[int] = None
+    description: Optional[str] = None
+    project_path: Optional[str] = None
+
+
+class QueuedPromptResponse(BaseModel):
+    id: int
+    queue_id: int
+    position: int
+    status: str
+    title: Optional[str] = None
+    prompt: str
+    injected_at: Optional[str] = None
+    submitted_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    skipped_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
+    last_error: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class QueuedPromptCreateRequest(BaseModel):
+    prompt: str
+    title: Optional[str] = None
+    position: Optional[int] = None
+
+
+class QueuedPromptUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    prompt: Optional[str] = None
+
+
+class ReorderRequest(BaseModel):
+    new_position: int
+
+
+class InjectRequest(BaseModel):
+    restore_clipboard: bool = False
+
+
+class QueueSummaryResponse(BaseModel):
+    queue: PromptQueueResponse
+    target: Optional[AppTargetResponse] = None
+    prompts: List[QueuedPromptResponse] = []
+    current: Optional[QueuedPromptResponse] = None
+    waiting: Optional[QueuedPromptResponse] = None
+    counts: Dict[str, int] = {}
+
+
+class InjectResultResponse(BaseModel):
+    clipboard_set: bool
+    paste_sent: bool
+    submit_sent: bool
+    clipboard_restored: bool
+    automation_available: bool
+    submit_mode: str
+    message: str
+
+
+class InjectOutcomeResponse(BaseModel):
+    summary: QueueSummaryResponse
+    prompt: QueuedPromptResponse
+    injection: InjectResultResponse
+    target_summary: str

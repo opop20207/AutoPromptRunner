@@ -1,9 +1,11 @@
 import { useState } from "react";
 
 import { api } from "./api/client";
+import { AppTargetPanel } from "./components/AppTargetPanel";
 import { AuthPanel } from "./components/AuthPanel";
 import { Dashboard } from "./components/Dashboard";
 import { Layout, Section } from "./components/Layout";
+import { PromptQueuePanel } from "./components/PromptQueuePanel";
 import { ProjectForm } from "./components/ProjectForm";
 import { ProjectList } from "./components/ProjectList";
 import { ProviderForm } from "./components/ProviderForm";
@@ -85,6 +87,18 @@ export default function App() {
     >
       {section === "overview" && (
         <Dashboard selectedProject={runProject} refreshKey={overviewRefresh} onNavigate={setSection} />
+      )}
+
+      {section === "app-targets" && (
+        <Section title="Claude Code App Targets">
+          <AppTargetPanel refreshKey={overviewRefresh} onChanged={bumpOverview} />
+        </Section>
+      )}
+
+      {section === "prompt-queues" && (
+        <Section title="Claude Code Prompt Queues">
+          <PromptQueuePanel refreshKey={overviewRefresh} onChanged={bumpOverview} />
+        </Section>
       )}
 
       {section === "projects" && (

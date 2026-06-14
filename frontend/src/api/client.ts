@@ -4,9 +4,15 @@
 // time with the VITE_API_BASE_URL environment variable.
 
 import type {
+  AppTarget,
+  AppTargetCreate,
   ArtifactDetail,
   ArtifactSummary,
   Health,
+  InjectOutcome,
+  PromptQueue,
+  QueuedPrompt,
+  QueueSummary,
   Project,
   ProjectCreate,
   RunCreate,
@@ -291,6 +297,48 @@ export const api = {
     body: { confirm: boolean; message?: string | null; files?: string[]; allow_failed?: boolean },
   ) => request<CommitResult>(`/commits/runs/${runId}/apply`, { method: "POST", body: JSON.stringify(body) }),
   listCommits: (runId: number) => request<RunCommit[]>(`/commits/runs/${runId}`),
+
+  // -- Claude Code app prompt queue controller --
+  listAppTargets: () => request<AppTarget[]>("/app-targets"),
+  createAppTarget: (body: AppTargetCreate) =>
+    request<AppTarget>("/app-targets", { method: "POST", body: JSON.stringify(body) }),
+  getAppTarget: (id: number) => request<AppTarget>(`/app-targets/${id}`),
+  updateAppTarget: (id: number, body: Partial<AppTargetCreate>) =>
+    request<AppTarget>(`/app-targets/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  enableAppTarget: (id: number) => request<AppTarget>(`/app-targets/${id}/enable`, { method: "POST" }),
+  disableAppTarget: (id: number) => request<AppTarget>(`/app-targets/${id}/disable`, { method: "POST" }),
+  deleteAppTarget: (id: number) => request<{ deleted: number }>(`/app-targets/${id}`, { method: "DELETE" }),
+
+  listPromptQueues: () => request<PromptQueue[]>("/prompt-queues"),
+  createPromptQueue: (body: { name: string; app_target_id?: number | null; description?: string | null }) =>
+    request<PromptQueue>("/prompt-queues", { method: "POST", body: JSON.stringify(body) }),
+  getPromptQueue: (id: number) => request<QueueSummary>(`/prompt-queues/${id}`),
+  deletePromptQueue: (id: number) =>
+    request<{ deleted: number }>(`/prompt-queues/${id}`, { method: "DELETE" }),
+  addQueuedPrompt: (queueId: number, body: { prompt: string; title?: string | null; position?: number | null }) =>
+    request<QueuedPrompt>(`/prompt-queues/${queueId}/prompts`, { method: "POST", body: JSON.stringify(body) }),
+  updateQueuedPrompt: (promptId: number, body: { title?: string | null; prompt?: string | null }) =>
+    request<QueuedPrompt>(`/prompt-queues/prompts/${promptId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  reorderQueuedPrompt: (promptId: number, newPosition: number) =>
+    request<QueuedPrompt>(`/prompt-queues/prompts/${promptId}/reorder`, {
+      method: "POST",
+      body: JSON.stringify({ new_position: newPosition }),
+    }),
+  injectCurrentPrompt: (queueId: number, restoreClipboard = false) =>
+    request<InjectOutcome>(`/prompt-queues/${queueId}/inject-current`, {
+      method: "POST",
+      body: JSON.stringify({ restore_clipboard: restoreClipboard }),
+    }),
+  completeCurrentPrompt: (queueId: number) =>
+    request<QueueSummary>(`/prompt-queues/${queueId}/complete-current`, { method: "POST" }),
+  skipCurrentPrompt: (queueId: number) =>
+    request<QueueSummary>(`/prompt-queues/${queueId}/skip-current`, { method: "POST" }),
+  pausePromptQueue: (queueId: number) =>
+    request<QueueSummary>(`/prompt-queues/${queueId}/pause`, { method: "POST" }),
+  resumePromptQueue: (queueId: number) =>
+    request<QueueSummary>(`/prompt-queues/${queueId}/resume`, { method: "POST" }),
+  cancelPromptQueue: (queueId: number) =>
+    request<QueueSummary>(`/prompt-queues/${queueId}/cancel`, { method: "POST" }),
 };
 
 // Build the SSE live-stream URL for a run. The API token (when stored) is appended as a
