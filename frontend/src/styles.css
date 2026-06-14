@@ -849,6 +849,37 @@ pre.block.large {
   margin-bottom: 4px;
 }
 
+/* -- live log connection mode indicator -- */
+
+.livemode {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: #eceef2;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.livemode-sse {
+  background: #e1f3e8;
+  color: var(--ok);
+}
+
+.livemode-sse-disconnected {
+  background: #fdf3da;
+  color: #9a6a00;
+}
+
+.livemode-polling {
+  background: #e4ecfb;
+  color: var(--accent);
+}
+
+.livemode-paused {
+  background: #eceef2;
+  color: var(--muted);
+}
+
 /* -- header auth control -- */
 
 .auth-control {

@@ -16,7 +16,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import locks, providers, queue, storage  # noqa: E402
+from autoprompt_runner import events, locks, providers, queue, storage  # noqa: E402
 from autoprompt_runner.approvals import ApprovalStatus  # noqa: E402
 from autoprompt_runner.models import AgentResult, NextPrompt  # noqa: E402
 from autoprompt_runner.runners import ClaudeCodeRunner  # noqa: E402
@@ -164,6 +164,49 @@ class ProviderProfileTests(unittest.TestCase):
         self.assertEqual(recovery_run.timeout_seconds, 600)
         self.assertEqual(recovery_run.root_prompt, "recovery prompt")
         self.assertEqual(storage.get_run(self.db, source_id).root_prompt, "original prompt")  # source untouched
+
+
+class EventEmissionTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _types(self, run_id):
+        return [e.type for e in storage.list_run_events(self.db, run_id)]
+
+    def test_emits_basic_lifecycle_events(self):
+        report = RunService(self.db).start("do it", "mock", max_loops=1, require_approval=False)
+        types = self._types(report.run_id)
+        for expected in (
+            events.RUN_CREATED, events.RUN_STARTED, events.STEP_STARTED,
+            events.STEP_FINISHED, events.RUN_DONE,
+        ):
+            self.assertIn(expected, types)
+
+    def test_emits_stdout_event(self):
+        report = RunService(self.db).start("do it", "mock", max_loops=1, require_approval=False)
+        self.assertIn(events.STDOUT, self._types(report.run_id))
+
+    def test_emits_approval_pending_event(self):
+        report = RunService(self.db).start("do it", "mock", max_loops=3, require_approval=True)
+        self.assertEqual(report.run_status, RunStatus.WAITING_APPROVAL.value)
+        self.assertIn(events.APPROVAL_PENDING, self._types(report.run_id))
+
+    def test_worker_emits_job_events(self):
+        from autoprompt_runner.worker import LocalWorker
+
+        svc = RunService(self.db)
+        run_id = svc.create_run_only("queued", "mock", 1, require_approval=False)
+        queue.enqueue(self.db, run_id)
+        self.assertIn(events.RUN_QUEUED, self._types(run_id))
+        LocalWorker(self.db).run_once()
+        types = self._types(run_id)
+        self.assertIn(events.WORKER_MESSAGE, types)
+        self.assertIn(events.RUN_DONE, types)
 
 
 class GitArtifactCaptureTests(unittest.TestCase):

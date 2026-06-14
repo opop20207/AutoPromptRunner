@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, cancel, config, locks, processes, safety, storage, templates, worktrees
+from .. import artifacts, cancel, config, events, locks, processes, safety, storage, templates, worktrees
 from .. import providers as provider_mgmt
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
@@ -316,7 +316,7 @@ class RunService:
             raise RunServiceError(f"unsupported provider: {provider}")
         safety.validate_max_loops(max_loops)  # hard-limit backstop (CLI/API validate earlier)
         safety.validate_timeout_seconds(timeout_seconds)
-        return storage.create_run(
+        run_id = storage.create_run(
             self.db_path,
             root_prompt=prompt,
             provider=provider,
@@ -326,6 +326,8 @@ class RunService:
             timeout_seconds=timeout_seconds,
             project_id=project_id,
         )
+        self._emit(run_id, events.RUN_CREATED, message="run created", payload={"provider": provider})
+        return run_id
 
     def create_run_only_like(self, source_run, prompt: str) -> int:
         """Create a new CREATED run reusing another run's settings (for failure recovery).
@@ -372,6 +374,7 @@ class RunService:
 
         timeout_seconds = run.timeout_seconds if run.timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS
         storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
+        self._emit(run_id, events.RUN_STARTED, message="run started", payload={"provider": run.provider})
         blocked = safety.scan_prompt_for_blocked_commands(run.root_prompt)
         if blocked:
             storage.create_artifact(
@@ -379,6 +382,8 @@ class RunService:
                 content="blocked command pattern(s): " + ", ".join(blocked),
             )
             storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
+            self._emit(run_id, events.SAFETY_WARNING, message="blocked command pattern(s): " + ", ".join(blocked))
+            self._emit(run_id, events.RUN_FAILED, message="run blocked by safety", payload={"blocked": blocked})
             raise SafetyBlockedError(run_id, blocked)
 
         # Acquire the workspace lock before any runner execution (no-op without a workspace).
@@ -389,7 +394,10 @@ class RunService:
                 self.db_path, run_id=run_id, artifact_type=locks.LOCK_BLOCKER_ARTIFACT, content=str(exc),
             )
             storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
+            self._emit(run_id, events.RUN_FAILED, message="run blocked: workspace locked")
             raise WorkspaceLockedError(run_id, exc.workspace_path, exc.holder_run_id) from exc
+        if run.workspace:
+            self._emit(run_id, events.LOCK_ACQUIRED, message=run.workspace)
 
         try:
             loop_index = len(storage.get_steps_for_run(self.db_path, run_id))
@@ -462,6 +470,7 @@ class RunService:
             storage.approve_pending_approval(self.db_path, run_id)
             next_index = len(storage.get_steps_for_run(self.db_path, run_id))
             storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
+            self._emit(run_id, events.RUN_STARTED, message="approved; continuing")
             return self._drive(
                 run_id=run_id,
                 root_prompt=run.root_prompt,
@@ -488,6 +497,7 @@ class RunService:
         storage.reject_pending_approval(self.db_path, run_id)
         storage.update_run_status(self.db_path, run_id, RunStatus.STOPPED.value)
         self._release_workspace_lock(run_id, run.workspace)  # release if still held
+        self._emit(run_id, events.RUN_STOPPED, message="rejected", payload={"status": "STOPPED"})
         steps = storage.get_steps_for_run(self.db_path, run_id)
         return StepExecutionReport(
             run_id=run_id,
@@ -514,6 +524,7 @@ class RunService:
 
         cancellation_id = storage.request_run_cancellation(self.db_path, run_id, reason)
         self._store_cancellation_artifact(run_id, reason)
+        self._emit(run_id, events.CANCELLATION_REQUESTED, message=reason or "cancellation requested")
         job = storage.get_job_by_run_id(self.db_path, run_id)
         terminated = False
         try:
@@ -528,6 +539,7 @@ class RunService:
             storage.update_run_status(self.db_path, run_id, RunStatus.STOPPED.value)
             self._release_workspace_lock(run_id, run.workspace)
             storage.complete_run_cancellation(self.db_path, cancellation_id)
+            self._emit(run_id, events.RUN_STOPPED, message="run cancelled", payload={"status": "STOPPED"})
         except Exception as exc:  # noqa: BLE001  (record the failure, then surface it cleanly)
             storage.fail_run_cancellation(self.db_path, cancellation_id, str(exc))
             self._store_cancellation_error_artifact(run_id, str(exc))
@@ -580,9 +592,11 @@ class RunService:
         if not workspace:
             return None
         try:
-            return locks.acquire_lock(self.db_path, workspace, run_id, timeout_seconds=timeout_seconds)
+            lock = locks.acquire_lock(self.db_path, workspace, run_id, timeout_seconds=timeout_seconds)
         except locks.LockConflictError as exc:
             raise WorkspaceLockedError(run_id, exc.workspace_path, exc.holder_run_id) from exc
+        self._emit(run_id, events.LOCK_ACQUIRED, message=workspace)
+        return lock
 
     def _run_was_cancelled(self, run_id: int) -> bool:
         """True if the run has been moved to STOPPED (e.g. by ``cancel_run``)."""
@@ -601,6 +615,34 @@ class RunService:
         if not workspace:
             return
         locks.release_lock(self.db_path, run_id)
+        self._emit(run_id, events.LOCK_RELEASED, message=workspace)
+
+    def _emit(self, run_id, type, message=None, payload=None, step_id=None) -> None:
+        """Emit a run event for live log streaming; never let event emission break a run."""
+        try:
+            events.create_event(self.db_path, run_id, type, message=message, payload=payload, step_id=step_id)
+        except Exception:  # noqa: BLE001 - events are best-effort, never fatal
+            pass
+
+    def _record_step(
+        self, run_id, loop_index, prompt, result, status, next_prompt, git_payloads, safety_warnings, streamed,
+    ) -> int:
+        """Persist a step + its artifacts/warnings and emit the matching live log events."""
+        step_id = self._persist_step(run_id, loop_index, prompt, result, status, next_prompt)
+        self._store_artifacts(run_id, step_id, git_payloads, result)
+        self._store_warnings(run_id, step_id, safety_warnings)
+        # Emit captured output for any stream the runner did not already stream live.
+        if not streamed.get("stdout") and (result.stdout or "").strip():
+            self._emit(run_id, events.STDOUT, message=result.stdout, step_id=step_id)
+        if not streamed.get("stderr") and (result.stderr or "").strip():
+            self._emit(run_id, events.STDERR, message=result.stderr, step_id=step_id)
+        for warning in safety_warnings:
+            self._emit(run_id, events.SAFETY_WARNING, message=warning, step_id=step_id)
+        self._emit(
+            run_id, events.STEP_FINISHED, message=f"step {loop_index} {status}",
+            payload={"loop_index": loop_index, "status": status, "exit_code": result.exit_code}, step_id=step_id,
+        )
+        return step_id
 
     def _drive(
         self,
@@ -628,6 +670,19 @@ class RunService:
             git_capture = artifacts.workspace_is_git(workspace)
             status_before = artifacts.capture_git_status(workspace) if git_capture else ""
             runner = self._make_runner(provider, workspace, timeout_seconds)
+            # Live log streaming: emit each captured output line as an event. Streams that the
+            # runner reports here are not re-emitted in full below (avoids duplicate content).
+            streamed = {"stdout": False, "stderr": False}
+
+            def _on_output(stream, line, _streamed=streamed):
+                _streamed[stream] = True
+                self._emit(run_id, stream, message=line)
+
+            runner.set_output_callback(_on_output)
+            self._emit(
+                run_id, events.STEP_STARTED, message=f"step {loop_index} started",
+                payload={"loop_index": loop_index},
+            )
             result = runner.run(prompt, run_id=run_id)
             loops_done = loop_index + 1
 
@@ -656,9 +711,11 @@ class RunService:
             # Honor a cancellation that landed while this step executed: record the step +
             # artifacts but do not overwrite the externally-set STOPPED status.
             if self._run_was_cancelled(run_id):
-                step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.STOPPED.value, None)
-                self._store_artifacts(run_id, step_id, git_payloads, result)
-                self._store_warnings(run_id, step_id, safety_warnings)
+                step_id = self._record_step(
+                    run_id, loop_index, prompt, result, RunStatus.STOPPED.value, None,
+                    git_payloads, safety_warnings, streamed,
+                )
+                self._emit(run_id, events.RUN_STOPPED, message="run stopped", payload={"status": "STOPPED"})
                 return StepExecutionReport(
                     run_id=run_id, run_status=RunStatus.STOPPED.value, loop_index=loop_index,
                     provider=provider, step_id=step_id, exit_code=result.exit_code, message="cancelled",
@@ -666,12 +723,14 @@ class RunService:
 
             if result.exit_code != 0:
                 nxt = self.generator.generate(context)
-                step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.FAILED.value, nxt.prompt)
-                self._store_artifacts(run_id, step_id, git_payloads, result)
-                self._store_warnings(run_id, step_id, safety_warnings)
+                step_id = self._record_step(
+                    run_id, loop_index, prompt, result, RunStatus.FAILED.value, nxt.prompt,
+                    git_payloads, safety_warnings, streamed,
+                )
                 storage.update_run_status(
                     self.db_path, run_id, RunStatus.FAILED.value, finished_at=result.finished_at
                 )
+                self._emit(run_id, events.RUN_FAILED, message="run failed", payload={"exit_code": result.exit_code})
                 return StepExecutionReport(
                     run_id=run_id, run_status=RunStatus.FAILED.value, loop_index=loop_index,
                     provider=provider, step_id=step_id, exit_code=result.exit_code,
@@ -679,21 +738,24 @@ class RunService:
                 )
 
             if loops_done >= max_loops:
-                step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.DONE.value, None)
-                self._store_artifacts(run_id, step_id, git_payloads, result)
-                self._store_warnings(run_id, step_id, safety_warnings)
+                step_id = self._record_step(
+                    run_id, loop_index, prompt, result, RunStatus.DONE.value, None,
+                    git_payloads, safety_warnings, streamed,
+                )
                 storage.update_run_status(
                     self.db_path, run_id, RunStatus.DONE.value, finished_at=result.finished_at
                 )
+                self._emit(run_id, events.RUN_DONE, message="max_loops reached", payload={"status": "DONE"})
                 return StepExecutionReport(
                     run_id=run_id, run_status=RunStatus.DONE.value, loop_index=loop_index,
                     provider=provider, step_id=step_id, exit_code=0, message="max_loops reached",
                 )
 
             nxt = self.generator.generate(context)
-            step_id = self._persist_step(run_id, loop_index, prompt, result, RunStatus.DONE.value, nxt.prompt)
-            self._store_artifacts(run_id, step_id, git_payloads, result)
-            self._store_warnings(run_id, step_id, safety_warnings)
+            step_id = self._record_step(
+                run_id, loop_index, prompt, result, RunStatus.DONE.value, nxt.prompt,
+                git_payloads, safety_warnings, streamed,
+            )
 
             # A risky change (secret-like file or large diff) forces an approval gate even
             # when require_approval is False.
@@ -701,6 +763,10 @@ class RunService:
                 approval_id = storage.create_approval(self.db_path, run_id, step_id, nxt.prompt)
                 storage.update_run_status(self.db_path, run_id, RunStatus.WAITING_APPROVAL.value)
                 message = "waiting for approval (risky change)" if risky and not require_approval else "waiting for approval"
+                self._emit(
+                    run_id, events.APPROVAL_PENDING, message=message,
+                    payload={"approval_id": approval_id}, step_id=step_id,
+                )
                 return StepExecutionReport(
                     run_id=run_id, run_status=RunStatus.WAITING_APPROVAL.value, loop_index=loop_index,
                     provider=provider, step_id=step_id, exit_code=0, next_prompt=nxt.prompt,

@@ -257,6 +257,17 @@ export const api = {
     request<ExportSummary>("/export-import/summary", { method: "POST", body: JSON.stringify({ payload }) }),
 };
 
+// Build the SSE live-stream URL for a run. The API token (when stored) is appended as a
+// query parameter because EventSource cannot set an Authorization header -- a local-only
+// tradeoff (the token is never logged). Used only for the events stream endpoint.
+export function eventStreamUrl(runId: number, afterId?: number): string {
+  const token = getToken();
+  const params: Record<string, string | number | undefined> = {};
+  if (afterId != null) params.after_id = afterId;
+  if (token) params.token = token;
+  return `${BASE_URL}/events/runs/${runId}/stream${queryString(params)}`;
+}
+
 export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     return err.message;

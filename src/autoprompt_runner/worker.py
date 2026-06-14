@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 from typing import Callable, Optional
 
-from . import queue, settings, storage
+from . import events, queue, settings, storage
 from .services.run_service import RunService
 from .state import RunStatus
 
@@ -54,14 +54,24 @@ class LocalWorker:
             self.log(f"worker: job {job.id} skipped (run {job.run_id} is {status})")
             return True
         self.log(f"worker: running job {job.id} (run {job.run_id})")
+        self._emit(job.run_id, f"worker started job {job.id}")
         try:
             report = self.service.execute_queued_run(job.run_id)
             queue.complete_job(self.db_path, job.id)
             self.log(f"worker: job {job.id} done (run {job.run_id} -> {report.run_status})")
+            self._emit(job.run_id, f"worker finished job {job.id} ({report.run_status})")
         except Exception as exc:  # noqa: BLE001  (record any failure and keep the loop alive)
             queue.fail_job(self.db_path, job.id, exc)
             self.log(f"worker: job {job.id} failed (run {job.run_id}): {exc}")
+            self._emit(job.run_id, f"worker job {job.id} failed: {exc}")
         return True
+
+    def _emit(self, run_id: int, message: str) -> None:
+        """Emit a worker_message run event (best-effort; never breaks the worker loop)."""
+        try:
+            events.create_event(self.db_path, run_id, events.WORKER_MESSAGE, message=message)
+        except Exception:  # noqa: BLE001
+            pass
 
     def run_forever(self, stop_after: Optional[int] = None) -> int:
         """Poll the queue and execute jobs until stopped. Returns the number executed.

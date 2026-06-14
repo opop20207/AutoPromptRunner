@@ -80,9 +80,9 @@ and diagnose an environment with `scripts/doctor.sh`.
 
 ## Not supported yet (post-v0.1)
 
-- Authentication and multi-user deployment
+- Multi-user / hosted deployment (optional single-token API auth was added post-v0.1)
 - Distributed workers or a hosted/cloud service
-- WebSocket / SSE live streaming (run logs use polling)
+- WebSocket streaming (SSE live log streaming was added post-v0.1)
 - Cloud sync and browser automation
 - Guaranteed process cancellation across machine restarts
 - Full provider-specific advanced options
@@ -1319,18 +1319,44 @@ pending next prompt (toggle **Show full next prompt** for the untruncated text).
 **Approve** runs the next step and **Reject** stops the run; either action reloads the
 run detail, the run list, and the artifacts.
 
-### Live logs (polling)
+### Live logs (SSE streaming, with polling fallback)
 
-The **Logs** panel in the run detail polls `GET /runs/{id}/logs` every
-2 seconds while the run is `RUNNING` or `WAITING_APPROVAL`, and stops once the run is
-`DONE`, `FAILED`, or `STOPPED`. It shows the run status, the latest step id, and the
-latest stdout/stderr in scrollable monospace blocks, with **Refresh** and
-**Pause/Resume** controls; when polling detects a terminal status the full run detail
-reloads.
+The **Logs** panel streams run events over **Server-Sent Events (SSE)**, pushing status and
+stdout/stderr to the UI as they are recorded -- no more waiting for a poll tick. If the SSE
+connection cannot be established (or the browser lacks `EventSource`), it **falls back to the
+previous polling** of `GET /runs/{id}/logs`. The panel shows the connection mode (**SSE
+connected** / **SSE disconnected** / **polling fallback** / **paused**), deduplicates events
+by id, and keeps the **Refresh** and **Pause/Resume** controls; a terminal event reloads the
+full run detail.
 
-This is **polling, not a true stream**: because each runner writes its output when its
-step finishes, stdout/stderr update only after each step completes (not character by
-character). True streaming (SSE or WebSocket) is planned for a future step.
+**How it works.** Every lifecycle point records a **run event** (`run_created`,
+`run_queued`, `run_started`, `step_started`, `stdout`, `stderr`, `step_finished`,
+`approval_pending`, `run_done` / `run_failed` / `run_stopped`, `cancellation_requested`,
+`safety_warning`, `lock_acquired` / `lock_released`, `worker_message`) to a local
+`run_events` table. The endpoint **`GET /events/runs/{run_id}/stream`** replays stored events
+after an optional `after_id` (or the `Last-Event-ID` header on reconnect), then streams new
+ones, sending a heartbeat comment every 15 seconds and closing once the run is terminal. A
+JSON snapshot is available at `GET /events/runs/{run_id}`.
+
+```
+curl -N http://127.0.0.1:8000/events/runs/12/stream
+```
+
+**Auth for SSE.** When [auth](#local-access-protection-optional-api-token-auth) is enabled,
+the stream accepts the token via the `Authorization: Bearer` header **or** a `?token=` query
+parameter (because `EventSource` cannot set headers). The token is never logged or included
+in any event payload. The query-token form is a convenience for **local** use only -- prefer
+the header when a client can send it, and remember a URL query can appear in local logs/history.
+
+**vs. the previous polling.** Polling only refreshed every ~2 seconds and showed output
+after each step completed; SSE pushes each recorded event immediately. The granularity of
+stdout/stderr still depends on the provider subprocess (the `claude-code` / `codex` runners
+capture output per step), but events arrive without a poll delay.
+
+**Limitations.** The event bus is a **local SQLite table** (no Redis / external broker, no
+WebSocket). There is **no distributed pub/sub**: when the worker runs in a **separate
+process** from the API, the stream delivers events via periodic database polling on the
+server side. Streaming granularity depends on the provider's subprocess output behavior.
 
 ## Runner Providers
 

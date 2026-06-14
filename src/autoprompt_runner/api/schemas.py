@@ -411,3 +411,18 @@ class ExportSummaryResponse(BaseModel):
     redacted: bool = False
     redacted_artifacts: int = 0
     counts: Dict[str, int] = {}
+
+
+class RunEventResponse(BaseModel):
+    id: int
+    run_id: int
+    step_id: Optional[int] = None
+    type: str
+    message: Optional[str] = None
+    payload: Dict[str, object] = {}
+    created_at: str
+
+
+class RunEventListResponse(BaseModel):
+    events: List[RunEventResponse] = []
+    latest_id: Optional[int] = None

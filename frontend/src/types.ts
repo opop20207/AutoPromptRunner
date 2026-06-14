@@ -395,6 +395,37 @@ export interface ImportSummary {
 
 export const IMPORT_MODES = ["merge", "skip_existing", "replace_templates_only"] as const;
 
+export type RunEventType =
+  | "run_created"
+  | "run_queued"
+  | "run_started"
+  | "step_started"
+  | "stdout"
+  | "stderr"
+  | "step_finished"
+  | "approval_pending"
+  | "run_done"
+  | "run_failed"
+  | "run_stopped"
+  | "cancellation_requested"
+  | "safety_warning"
+  | "lock_acquired"
+  | "lock_released"
+  | "worker_message";
+
+export interface RunEvent {
+  id: number;
+  run_id: number;
+  step_id?: number | null;
+  type: string;
+  message?: string | null;
+  payload?: Record<string, unknown>;
+  created_at: string;
+}
+
+// Live log connection mode shown in the panel.
+export type LiveLogMode = "sse" | "sse-disconnected" | "polling" | "paused";
+
 export interface Step {
   id: number;
   loop_index: number;

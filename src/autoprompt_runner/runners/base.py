@@ -8,9 +8,13 @@ adapter that satisfies this interface, without changing the calling code.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Callable, Optional
 
 from ..models import AgentResult
+
+# An optional output callback: ``callback(stream, line)`` where ``stream`` is "stdout" or
+# "stderr". Used by the run service to turn captured output into live log events.
+OutputCallback = Callable[[str, str], None]
 
 
 class AgentRunner(ABC):
@@ -34,6 +38,17 @@ class AgentRunner(ABC):
     def name(self) -> str:
         """Short, stable identifier for the provider (for example ``"mock"``)."""
         raise NotImplementedError
+
+    def set_output_callback(self, callback: Optional["OutputCallback"]) -> None:
+        """Register an optional ``callback(stream, line)`` for live stdout/stderr lines.
+
+        Default is a no-op, so a runner that does not stream (the mock, or a test stub) is
+        unaffected and ``run``'s signature is unchanged. The subprocess runners override this
+        to emit each captured output line for live log events; the full output is still
+        returned in the :class:`AgentResult`.
+        """
+        # No-op by default.
+        return None
 
     @abstractmethod
     def run(self, prompt: str, run_id: Optional[int] = None) -> AgentResult:

@@ -34,7 +34,15 @@ CANCEL_NOT_ACTIVE = "not_active"
 
 def enqueue(db_path: str, run_id: int, priority: int = 100, max_attempts: int = 1) -> int:
     """Enqueue a run as a QUEUED job and return the job id (raises if already active)."""
-    return storage.enqueue_run(db_path, run_id, priority=priority, max_attempts=max_attempts)
+    job_id = storage.enqueue_run(db_path, run_id, priority=priority, max_attempts=max_attempts)
+    # Emit a run_queued live-log event (best-effort; never let it break enqueue).
+    try:
+        from . import events  # local import avoids a load-time cycle
+
+        events.create_event(db_path, run_id, events.RUN_QUEUED, message="run queued", payload={"job_id": job_id})
+    except Exception:  # noqa: BLE001
+        pass
+    return job_id
 
 
 def claim_next_job(db_path: str) -> Optional[QueueJob]:

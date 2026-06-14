@@ -64,12 +64,26 @@ class ClaudeCodeRunner(AgentRunner):
         self.workspace = workspace
         # Extra args come from a provider profile's default_args (already split, no shell).
         self.extra_args = list(extra_args or [])
+        self._on_output = None  # optional live-output callback (see set_output_callback)
         if self.workspace is not None and not _ospath.isdir(self.workspace):
             raise ValueError(f"workspace does not exist or is not a directory: {self.workspace}")
 
     @property
     def name(self) -> str:
         return "claude-code"
+
+    def set_output_callback(self, callback) -> None:
+        """Register a ``callback(stream, line)`` to receive captured stdout/stderr lines."""
+        self._on_output = callback
+
+    def _emit_output(self, stdout: str, stderr: str) -> None:
+        """Forward captured output line-by-line to the callback (no secrets are added)."""
+        if self._on_output is None:
+            return
+        for line in (stdout or "").splitlines():
+            self._on_output("stdout", line)
+        for line in (stderr or "").splitlines():
+            self._on_output("stderr", line)
 
     def _build_argv(self, prompt: str) -> List[str]:
         # Non-interactive print mode: claude [extra args] -p "<prompt>". No shell is used.
@@ -130,8 +144,10 @@ class ClaudeCodeRunner(AgentRunner):
                     stdout=_as_text(stdout), stderr=combined, exit_code=_EXIT_CANCELLED,
                     started_at=started_at, finished_at=_now_iso(),
                 )
+            out_text, err_text = _as_text(stdout), _as_text(stderr)
+            self._emit_output(out_text, err_text)
             return AgentResult(
-                stdout=_as_text(stdout), stderr=_as_text(stderr), exit_code=process.returncode,
+                stdout=out_text, stderr=err_text, exit_code=process.returncode,
                 started_at=started_at, finished_at=_now_iso(),
             )
         finally:

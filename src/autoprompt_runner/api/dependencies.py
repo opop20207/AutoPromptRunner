@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Query
 
 from .. import auth, settings, storage
 
@@ -40,5 +40,26 @@ def require_health_auth(authorization: Optional[str] = Header(default=None)) -> 
         return
     try:
         auth.require_api_auth(authorization, app_settings)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc), headers=_UNAUTHORIZED_HEADERS)
+
+
+def require_api_auth_sse(
+    authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+) -> None:
+    """SSE auth: accept the bearer token via the Authorization header OR a ``?token=`` query.
+
+    EventSource cannot always set headers, so a query token is allowed for the stream
+    endpoint only (a local-only tradeoff; the token is never logged). No-op when auth is off.
+    """
+    app_settings = settings.load_settings()
+    if not auth.is_auth_enabled(app_settings):
+        return
+    header = authorization
+    if not auth.validate_bearer_token(header, app_settings) and token:
+        header = f"Bearer {token}"
+    try:
+        auth.require_api_auth(header, app_settings)
     except auth.AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc), headers=_UNAUTHORIZED_HEADERS)

@@ -232,6 +232,20 @@ CREATE TABLE IF NOT EXISTS recovery_attempts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_recovery_attempts_source ON recovery_attempts (source_run_id);
+
+CREATE TABLE IF NOT EXISTS run_events (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    step_id INTEGER,
+    type TEXT NOT NULL,
+    message TEXT,
+    payload TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- No foreign key on run_events: it is an append-only telemetry log, so emitting an event
+-- must never fail (best-effort), and events may outlive a deleted run.
+CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events (run_id, id);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1802,6 +1816,101 @@ def insert_imported_recovery(
         (source_run_id, recovery_run_id, failed_step_id, status, recovery_prompt, reason,
          created_at or _utcnow_iso(), decided_at, executed_at),
     )
+
+
+# -- run events (live log / SSE) ---------------------------------------------
+
+
+def create_run_event(
+    db_path: str,
+    run_id: int,
+    type: str,
+    message: Optional[str] = None,
+    payload: Optional[str] = None,
+    step_id: Optional[int] = None,
+):
+    """Insert a run event (``payload`` is a pre-serialized JSON string). Returns the RunEvent."""
+    from . import events as _events  # local import avoids a module-load cycle
+
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        now = _utcnow_iso()
+        cur = conn.execute(
+            "INSERT INTO run_events (run_id, step_id, type, message, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, step_id, type, message, payload, now),
+        )
+        conn.commit()
+        return _events.RunEvent(
+            id=int(cur.lastrowid), run_id=run_id, step_id=step_id, type=type,
+            message=message, payload=payload, created_at=now,
+        )
+    finally:
+        conn.close()
+
+
+def list_run_events(db_path: str, run_id: int, after_id: Optional[int] = None, limit: int = 100):
+    """Return a run's events (id ascending); only those with ``id > after_id`` when given."""
+    from . import events as _events
+
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        if after_id is None:
+            rows = conn.execute(
+                "SELECT * FROM run_events WHERE run_id = ? ORDER BY id ASC LIMIT ?", (run_id, int(limit))
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM run_events WHERE run_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                (run_id, int(after_id), int(limit)),
+            ).fetchall()
+        return [
+            _events.RunEvent(
+                id=r["id"], run_id=r["run_id"], step_id=_opt(r, "step_id"), type=r["type"],
+                message=_opt(r, "message"), payload=_opt(r, "payload"), created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def get_latest_run_event(db_path: str, run_id: int):
+    """Return the most recent event for ``run_id`` (highest id), or ``None``."""
+    from . import events as _events
+
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM run_events WHERE run_id = ? ORDER BY id DESC LIMIT 1", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return _events.RunEvent(
+            id=row["id"], run_id=row["run_id"], step_id=_opt(row, "step_id"), type=row["type"],
+            message=_opt(row, "message"), payload=_opt(row, "payload"), created_at=row["created_at"],
+        )
+    finally:
+        conn.close()
+
+
+def delete_old_run_events(db_path: str, run_id: int, keep_last: int = 1000) -> int:
+    """Delete all but the most recent ``keep_last`` events for ``run_id``. Returns rows deleted."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "DELETE FROM run_events WHERE run_id = ? AND id NOT IN "
+            "(SELECT id FROM run_events WHERE run_id = ? ORDER BY id DESC LIMIT ?)",
+            (run_id, run_id, int(keep_last)),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
 
 
 # -- search (SQLite LIKE; no external engine, no disk reads) ------------------
