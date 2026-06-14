@@ -294,6 +294,43 @@ export interface PromptChainResponse {
   chain_nodes: PromptChainNode[];
 }
 
+export interface ProviderProfile {
+  id: number;
+  name: string;
+  type: string;
+  command: string;
+  default_timeout_seconds: number;
+  default_args?: string | null;
+  enabled: boolean;
+  available: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderProfileCreate {
+  name: string;
+  type: string;
+  command: string;
+  default_timeout_seconds: number;
+  default_args?: string | null;
+  enabled: boolean;
+}
+
+export interface ProviderProfileUpdate {
+  type?: string;
+  command?: string;
+  default_timeout_seconds?: number;
+  default_args?: string | null;
+  enabled?: boolean;
+}
+
+export interface ProviderAvailability {
+  name: string;
+  type: string;
+  command: string;
+  available: boolean;
+}
+
 export interface Step {
   id: number;
   loop_index: number;

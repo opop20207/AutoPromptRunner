@@ -801,3 +801,33 @@ pre.block.large {
   gap: 8px;
   margin-bottom: 6px;
 }
+
+/* -- provider availability health list -- */
+
+.health-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.health-list li {
+  padding: 3px 0;
+  font-size: 13px;
+}
+
+.health-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.health-dot.ok {
+  background: var(--ok);
+}
+
+.health-dot.bad {
+  background: var(--error);
+}

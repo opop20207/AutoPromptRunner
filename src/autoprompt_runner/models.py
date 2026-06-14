@@ -74,6 +74,28 @@ class Project:
 
 
 @dataclass
+class ProviderProfile:
+    """A configurable provider profile, persisted in the ``provider_profiles`` table.
+
+    Lets a user configure how a provider is invoked (the ``command`` executable, a default
+    ``default_timeout_seconds``, and space-separated ``default_args``) without hardcoding it,
+    and have several profiles for one ``type`` (for example a ``claude-fast`` profile of type
+    ``claude-code``). ``enabled`` is stored as an integer (0/1) in SQLite but exposed here as
+    a ``bool``. Profiles never store secrets -- only non-secret command/argument settings.
+    """
+
+    id: int
+    name: str
+    type: str
+    command: str
+    default_timeout_seconds: int
+    default_args: Optional[str]
+    enabled: bool
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class Template:
     """A reusable prompt template, persisted in the ``templates`` table.
 

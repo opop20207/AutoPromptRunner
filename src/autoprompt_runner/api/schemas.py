@@ -301,3 +301,40 @@ class PromptChainResponse(BaseModel):
     failed_step_count: int
     total_artifact_count: int
     chain_nodes: List[PromptChainNode] = []
+
+
+class ProviderProfileCreateRequest(BaseModel):
+    name: str
+    type: str
+    command: str
+    default_timeout_seconds: int = 1800
+    default_args: Optional[str] = None
+    enabled: bool = True
+
+
+class ProviderProfileUpdateRequest(BaseModel):
+    type: Optional[str] = None
+    command: Optional[str] = None
+    default_timeout_seconds: Optional[int] = None
+    default_args: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class ProviderProfileResponse(BaseModel):
+    id: int
+    name: str
+    type: str
+    command: str
+    default_timeout_seconds: int
+    default_args: Optional[str] = None
+    enabled: bool
+    available: bool
+    created_at: str
+    updated_at: str
+
+
+class ProviderAvailabilityResponse(BaseModel):
+    name: str
+    type: str
+    command: str
+    available: bool

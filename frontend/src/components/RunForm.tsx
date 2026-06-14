@@ -5,6 +5,7 @@ import {
   MAX_LOOPS_HARD_LIMIT,
   PROVIDERS,
   TIMEOUT_SECONDS_HARD_LIMIT,
+  type ProviderProfile,
   type Template,
   type Worktree,
 } from "../types";
@@ -45,6 +46,7 @@ export function RunForm({
   const [notice, setNotice] = useState<string | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  const [providerProfiles, setProviderProfiles] = useState<ProviderProfile[]>([]);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -69,6 +71,14 @@ export function RunForm({
       cancelled = true;
     };
   }, [worktreeRefresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.listProviders().then((items) => !cancelled && setProviderProfiles(items)).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setPreview(null); // drop a stale preview when an input that feeds it changes
@@ -214,11 +224,18 @@ export function RunForm({
           Provider override
           <select value={provider} onChange={(e) => setProvider(e.target.value)}>
             <option value="">(use project / default)</option>
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
+            {providerProfiles.length > 0
+              ? providerProfiles.map((p) => (
+                  <option key={p.id} value={p.name} disabled={!p.enabled}>
+                    {p.name} ({p.type})
+                    {!p.enabled ? " — disabled" : !p.available ? " — unavailable" : ""}
+                  </option>
+                ))
+              : PROVIDERS.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
           </select>
         </label>
         <label>

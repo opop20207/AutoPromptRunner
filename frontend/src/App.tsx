@@ -5,6 +5,9 @@ import { Dashboard } from "./components/Dashboard";
 import { Layout, Section } from "./components/Layout";
 import { ProjectForm } from "./components/ProjectForm";
 import { ProjectList } from "./components/ProjectList";
+import { ProviderForm } from "./components/ProviderForm";
+import { ProviderHealthPanel } from "./components/ProviderHealthPanel";
+import { ProviderList } from "./components/ProviderList";
 import { ComparePanel } from "./components/ComparePanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { RunDetail } from "./components/RunDetail";
@@ -16,6 +19,7 @@ import { TemplateForm } from "./components/TemplateForm";
 import { TemplateList } from "./components/TemplateList";
 import { WorktreeForm } from "./components/WorktreeForm";
 import { WorktreeList } from "./components/WorktreeList";
+import type { ProviderProfile } from "./types";
 
 export default function App() {
   const [section, setSection] = useState<SectionKey>("overview");
@@ -28,6 +32,8 @@ export default function App() {
   const [selectedRun, setSelectedRun] = useState<number | null>(null);
   const [compareA, setCompareA] = useState<number | null>(null);
   const [compareB, setCompareB] = useState<number | null>(null);
+  const [providerRefresh, setProviderRefresh] = useState(0);
+  const [editingProvider, setEditingProvider] = useState<ProviderProfile | null>(null);
   const [runProject, setRunProject] = useState("");
   const [runTemplate, setRunTemplate] = useState("");
   const [runWorktree, setRunWorktree] = useState("");
@@ -35,6 +41,7 @@ export default function App() {
   const refreshProjects = () => setProjectRefresh((n) => n + 1);
   const refreshTemplates = () => setTemplateRefresh((n) => n + 1);
   const refreshWorktrees = () => setWorktreeRefresh((n) => n + 1);
+  const refreshProviders = () => setProviderRefresh((n) => n + 1);
   const bumpOverview = () => setOverviewRefresh((n) => n + 1);
 
   function onRunChanged() {
@@ -104,6 +111,25 @@ export default function App() {
         <>
           <WorktreeForm defaultProject={runProject} onCreated={refreshWorktrees} />
           <WorktreeList refreshKey={worktreeRefresh} onChanged={refreshWorktrees} />
+        </>
+      )}
+
+      {section === "providers" && (
+        <>
+          <ProviderForm
+            editing={editingProvider}
+            onSaved={() => {
+              setEditingProvider(null);
+              refreshProviders();
+            }}
+            onCancelEdit={() => setEditingProvider(null)}
+          />
+          <ProviderHealthPanel refreshKey={providerRefresh} />
+          <ProviderList
+            refreshKey={providerRefresh}
+            onChanged={refreshProviders}
+            onEdit={(p) => setEditingProvider(p)}
+          />
         </>
       )}
 

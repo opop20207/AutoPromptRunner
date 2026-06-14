@@ -27,6 +27,7 @@ import os
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .. import artifacts, cancel, config, locks, processes, safety, storage, templates, worktrees
+from .. import providers as provider_mgmt
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
 from ..projects import ResolvedRunSettings, resolve_run_settings
@@ -174,9 +175,24 @@ def resolve_run_inputs(
             raise RunInputError("invalid", f"template '{template_name}' rendered an empty prompt")
     else:
         text = prompt_text
-    if settings.provider not in DEFAULT_PROVIDER_FACTORIES:
+    # Resolve the provider: a provider-profile name (any type) or a built-in type name.
+    # A profile is rejected here when disabled or when its external command is unavailable
+    # (mock is always available), so the CLI/API reject before any run is created.
+    profile = storage.get_provider_profile_by_name(db_path, settings.provider)
+    if profile is not None:
+        try:
+            provider_mgmt.ensure_provider_runnable(profile)
+        except provider_mgmt.ProviderError as exc:
+            raise RunInputError("invalid", str(exc)) from exc
+        provider_type = profile.type
+    elif settings.provider in DEFAULT_PROVIDER_FACTORIES:
+        provider_type = settings.provider
+    else:
         supported = ", ".join(sorted(DEFAULT_PROVIDER_FACTORIES))
-        raise RunInputError("invalid", f"unsupported provider '{settings.provider}'. Supported: {supported}")
+        raise RunInputError(
+            "invalid",
+            f"unsupported provider '{settings.provider}'. Use a provider profile name or one of: {supported}",
+        )
     if settings.max_loops < 1:
         raise RunInputError("invalid", "--max-loops must be >= 1")
     if settings.max_loops > config.MAX_LOOPS_HARD_LIMIT:
@@ -189,11 +205,11 @@ def resolve_run_inputs(
         raise RunInputError(
             "invalid", f"--timeout-seconds must not exceed the hard limit of {config.TIMEOUT_SECONDS_HARD_LIMIT}"
         )
-    if settings.provider in WORKSPACE_REQUIRED_PROVIDERS:
+    if provider_type in WORKSPACE_REQUIRED_PROVIDERS:
         if not settings.workspace:
             raise RunInputError(
                 "invalid",
-                f"--workspace is required for the {settings.provider} provider "
+                f"--workspace is required for the {provider_type} provider "
                 "(pass --workspace or use a project repo_path)",
             )
         if not os.path.isdir(settings.workspace):
@@ -268,6 +284,10 @@ class RunService:
         generator: Optional[PromptGenerator] = None,
     ) -> None:
         self.db_path = storage.init_db(db_path)  # ensure DB exists; store resolved path
+        # ``_custom_providers`` records whether a caller injected a factory map (tests/custom
+        # construction). When custom, an injected factory wins for a provider profile so the
+        # runner stays offline; otherwise a profile is built from its configured command.
+        self._custom_providers = providers is not None
         self.providers = providers if providers is not None else dict(DEFAULT_PROVIDER_FACTORIES)
         self.generator = generator or PromptGenerator()
 
@@ -288,7 +308,7 @@ class RunService:
         worker later calls :meth:`execute_queued_run`. Basic input limits are validated
         here; the prompt safety scan and workspace lock are applied at execution time.
         """
-        if provider not in self.providers:
+        if provider not in self.providers and storage.get_provider_profile_by_name(self.db_path, provider) is None:
             raise RunServiceError(f"unsupported provider: {provider}")
         safety.validate_max_loops(max_loops)  # hard-limit backstop (CLI/API validate earlier)
         safety.validate_timeout_seconds(timeout_seconds)
@@ -314,6 +334,17 @@ class RunService:
             raise RunServiceError(f"run {run_id} not found", kind="not_found")
         if run.status not in (RunStatus.CREATED.value, RunStatus.RUNNING.value):
             raise RunServiceError(f"run {run_id} is {run.status}; cannot execute", kind="terminal")
+
+        # Backstop: reject a disabled or now-unavailable provider profile before executing
+        # (the CLI/API also reject at creation time). Built-in names without a profile fall
+        # through to the runner's own safe command-not-found handling.
+        profile = storage.get_provider_profile_by_name(self.db_path, run.provider)
+        if profile is not None:
+            try:
+                provider_mgmt.ensure_provider_runnable(profile)
+            except provider_mgmt.ProviderError as exc:
+                storage.update_run_status(self.db_path, run_id, RunStatus.FAILED.value)
+                raise RunServiceError(str(exc), kind="invalid") from exc
 
         timeout_seconds = run.timeout_seconds if run.timeout_seconds is not None else _DEFAULT_TIMEOUT_SECONDS
         storage.update_run_status(self.db_path, run_id, RunStatus.RUNNING.value)
@@ -500,6 +531,21 @@ class RunService:
     # -- internals ------------------------------------------------------------
 
     def _make_runner(self, provider: str, workspace: Optional[str], timeout_seconds: Optional[int]) -> AgentRunner:
+        """Build the runner for ``provider`` (a profile name or a built-in type name).
+
+        A provider profile resolves to its configured runner type and command; the timeout
+        falls back to the profile default when not given explicitly. When a custom factory
+        map was injected (tests), an injected factory for the profile name or type wins so
+        the runner stays offline. Names without a profile use the built-in factory map.
+        """
+        profile = storage.get_provider_profile_by_name(self.db_path, provider)
+        if profile is not None:
+            effective_timeout = timeout_seconds if timeout_seconds is not None else profile.default_timeout_seconds
+            if self._custom_providers:
+                injected = self.providers.get(provider) or self.providers.get(profile.type)
+                if injected is not None:
+                    return injected(workspace, effective_timeout)
+            return provider_mgmt.build_runner_for_profile(profile, workspace, effective_timeout)
         factory = self.providers.get(provider)
         if factory is None:
             raise RunServiceError(f"unsupported provider: {provider}")

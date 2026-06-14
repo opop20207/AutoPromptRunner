@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from ..models import AgentResult
 from .base import AgentRunner
@@ -21,7 +21,23 @@ class MockRunner(AgentRunner):
     of the loop, reporting, and (later) the state machine. It never spawns a
     subprocess and never touches the network, so it satisfies the project rule that
     tests must not depend on a real CLI installation.
+
+    It accepts the same optional constructor arguments as the real runners (``command``,
+    ``timeout_seconds``, ``workspace``, ``extra_args``) so a provider profile of type
+    ``mock`` can be built through the same path, but it ignores them -- nothing is executed.
     """
+
+    def __init__(
+        self,
+        command: str = "mock",
+        timeout_seconds: int = 30,
+        workspace: Optional[str] = None,
+        extra_args: Optional[List[str]] = None,
+    ) -> None:
+        self.command = command
+        self.timeout_seconds = timeout_seconds
+        self.workspace = workspace
+        self.extra_args = list(extra_args or [])
 
     @property
     def name(self) -> str:

@@ -19,6 +19,14 @@ class AgentRunner(ABC):
     Provider-specific logic (command construction, argument formatting, output
     parsing) must live inside a concrete subclass. Callers depend only on this
     interface, which keeps providers isolated and interchangeable.
+
+    Concrete runners are configured from a **provider profile** (see
+    ``autoprompt_runner.providers``): the subprocess-based runners accept ``command``,
+    ``timeout_seconds``, ``workspace``, and ``extra_args`` constructor arguments so the
+    executable, timeout, and default arguments come from the profile rather than being
+    hardcoded. ``MockRunner`` accepts the same arguments and ignores them. Construction is
+    centralized in ``providers.build_runner_for_profile``; this interface itself stays
+    minimal (``name`` plus ``run``).
     """
 
     @property

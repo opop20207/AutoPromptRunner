@@ -839,5 +839,63 @@ class ChainCliTests(_DbTestCase):
         self.assertIn("not found", err.lower())
 
 
+class ProviderCliTests(_DbTestCase):
+    def setUp(self):
+        super().setUp()
+        storage.init_db(self.db)
+
+    def test_provider_seed_and_list(self):
+        code, out, err = run_cli(["provider", "seed", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("seeded", out)
+        code, out, err = run_cli(["provider", "list", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("mock", out)
+        self.assertIn("claude-code", out)
+        self.assertIn("available", out)
+
+    def test_provider_add_show_update(self):
+        code, out, err = run_cli(
+            ["provider", "add", "--name", "claude-fast", "--type", "claude-code",
+             "--command", "claude", "--timeout-seconds", "1200", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        code, out, err = run_cli(["provider", "show", "--name", "claude-fast", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("claude-code", out)
+        self.assertIn("1200", out)
+        code, out, err = run_cli(
+            ["provider", "update", "--name", "claude-fast", "--timeout-seconds", "1800", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+
+    def test_provider_add_invalid_type(self):
+        code, out, err = run_cli(
+            ["provider", "add", "--name", "z", "--type", "nope", "--command", "x", "--db-path", self.db]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("unsupported provider type", err)
+
+    def test_provider_check_available_and_missing(self):
+        run_cli(["provider", "seed", "--db-path", self.db])
+        code, out, err = run_cli(["provider", "check", "--name", "mock", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("available", out)
+        code, out, err = run_cli(["provider", "check", "--name", "claude-code", "--db-path", self.db])
+        self.assertNotEqual(code, 0)  # 'claude' not installed in tests
+        code, out, err = run_cli(["provider", "check", "--name", "nope", "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("not found", err.lower())
+
+    def test_provider_enable_disable(self):
+        run_cli(["provider", "seed", "--db-path", self.db])
+        code, out, err = run_cli(["provider", "disable", "--name", "mock", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertFalse(storage.get_provider_profile_by_name(self.db, "mock").enabled)
+        code, out, err = run_cli(["provider", "enable", "--name", "mock", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertTrue(storage.get_provider_profile_by_name(self.db, "mock").enabled)
+
+
 if __name__ == "__main__":
     unittest.main()

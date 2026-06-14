@@ -16,9 +16,10 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import locks, queue, storage  # noqa: E402
+from autoprompt_runner import locks, providers, queue, storage  # noqa: E402
 from autoprompt_runner.approvals import ApprovalStatus  # noqa: E402
 from autoprompt_runner.models import AgentResult, NextPrompt  # noqa: E402
+from autoprompt_runner.runners import ClaudeCodeRunner  # noqa: E402
 from autoprompt_runner.runners.base import AgentRunner  # noqa: E402
 from autoprompt_runner.services import RunService, RunServiceError  # noqa: E402
 from autoprompt_runner.services.run_service import SafetyBlockedError, WorkspaceLockedError  # noqa: E402
@@ -110,6 +111,43 @@ class RunServiceTests(unittest.TestCase):
         start = svc.start("p", "mock", max_loops=1, require_approval=False)  # ends DONE, no pending
         with self.assertRaises(RunServiceError):
             svc.approve_and_continue(start.run_id)
+
+
+class ProviderProfileTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_uses_provider_profile_command(self):
+        # A profile whose name differs from its type resolves to the right runner + command.
+        storage.create_provider_profile(
+            self.db, name="claude-fast", type="claude-code", command="claude",
+            default_timeout_seconds=1200, default_args="--model x",
+        )
+        runner = RunService(self.db)._make_runner("claude-fast", workspace=None, timeout_seconds=None)
+        self.assertIsInstance(runner, ClaudeCodeRunner)
+        self.assertEqual(runner.command, "claude")
+        self.assertEqual(runner.timeout_seconds, 1200)  # profile default applies
+        self.assertEqual(runner._build_argv("hi"), ["claude", "--model", "x", "-p", "hi"])
+
+    def test_rejects_disabled_provider(self):
+        providers.seed_default_provider_profiles(self.db)
+        mock = storage.get_provider_profile_by_name(self.db, "mock")
+        storage.set_provider_enabled(self.db, mock.id, False)
+        svc = RunService(self.db)
+        with self.assertRaises(RunServiceError) as ctx:
+            svc.create_and_execute_run("p", "mock", 1, require_approval=False)
+        self.assertEqual(ctx.exception.kind, "invalid")
+
+    def test_seeded_mock_profile_still_runs(self):
+        # With profiles seeded, the built-in mock name resolves through the profile path.
+        providers.seed_default_provider_profiles(self.db)
+        report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False)
+        self.assertEqual(report.run_status, RunStatus.DONE.value)
 
 
 class GitArtifactCaptureTests(unittest.TestCase):

@@ -19,6 +19,7 @@ from .models import (
     Approval,
     Artifact,
     Project,
+    ProviderProfile,
     QueueJob,
     RunCancellation,
     RunLock,
@@ -198,6 +199,20 @@ CREATE TABLE IF NOT EXISTS run_cancellations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_cancellations_run ON run_cancellations (run_id);
+
+CREATE TABLE IF NOT EXISTS provider_profiles (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL,
+    command TEXT NOT NULL,
+    default_timeout_seconds INTEGER NOT NULL,
+    default_args TEXT,
+    enabled INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_profiles_name ON provider_profiles (name);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1351,6 +1366,169 @@ def list_cancellations(db_path: str, limit: int = 50) -> List[RunCancellation]:
         conn.close()
 
 
+# -- provider profiles -------------------------------------------------------
+
+# Sentinel so update_provider_profile can distinguish "leave default_args unchanged"
+# from "set default_args to NULL".
+_UNSET = object()
+
+
+def create_provider_profile(
+    db_path: str,
+    name: str,
+    type: str,
+    command: str,
+    default_timeout_seconds: int,
+    default_args: Optional[str] = None,
+    enabled: bool = True,
+) -> int:
+    """Insert a provider profile and return its id. ``name`` must be unique."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        now = _utcnow_iso()
+        cur = conn.execute(
+            "INSERT INTO provider_profiles "
+            "(name, type, command, default_timeout_seconds, default_args, enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, type, command, int(default_timeout_seconds), default_args, 1 if enabled else 0, now, now),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_provider_profiles(db_path: str) -> List[ProviderProfile]:
+    """Return all provider profiles ordered by name."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM provider_profiles ORDER BY name ASC").fetchall()
+        return [_row_to_provider_profile(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_provider_profile_by_id(db_path: str, profile_id: int) -> Optional[ProviderProfile]:
+    """Return the provider profile with ``profile_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM provider_profiles WHERE id = ?", (profile_id,)).fetchone()
+        return _row_to_provider_profile(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_provider_profile_by_name(db_path: str, name: str) -> Optional[ProviderProfile]:
+    """Return the provider profile named ``name`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM provider_profiles WHERE name = ?", (name,)).fetchone()
+        return _row_to_provider_profile(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def update_provider_profile(
+    db_path: str,
+    profile_id: int,
+    *,
+    type: Optional[str] = None,
+    command: Optional[str] = None,
+    default_timeout_seconds: Optional[int] = None,
+    default_args=_UNSET,
+    enabled: Optional[bool] = None,
+) -> None:
+    """Update the editable fields of a provider profile (only the ones provided)."""
+    sets: List[str] = []
+    params: List = []
+    if type is not None:
+        sets.append("type = ?")
+        params.append(type)
+    if command is not None:
+        sets.append("command = ?")
+        params.append(command)
+    if default_timeout_seconds is not None:
+        sets.append("default_timeout_seconds = ?")
+        params.append(int(default_timeout_seconds))
+    if default_args is not _UNSET:
+        sets.append("default_args = ?")
+        params.append(default_args)
+    if enabled is not None:
+        sets.append("enabled = ?")
+        params.append(1 if enabled else 0)
+    if not sets:
+        return
+    sets.append("updated_at = ?")
+    params.append(_utcnow_iso())
+    params.append(profile_id)
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(f"UPDATE provider_profiles SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_provider_enabled(db_path: str, profile_id: int, enabled: bool) -> None:
+    """Enable or disable a provider profile."""
+    update_provider_profile(db_path, profile_id, enabled=enabled)
+
+
+def delete_provider_profile(db_path: str, profile_id: int) -> None:
+    """Delete a provider profile (does not affect any external CLI tool)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute("DELETE FROM provider_profiles WHERE id = ?", (profile_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def seed_default_provider_profiles(db_path: str, specs, force: bool = False) -> dict:
+    """Create the given default provider profiles if missing.
+
+    Each spec is a dict with ``name``/``type``/``command``/``default_timeout_seconds`` and
+    optional ``default_args``/``enabled``. An existing profile is left untouched (a
+    user-modified profile is never overwritten) unless ``force`` is set, in which case it is
+    reset to the spec values. Returns ``{"seeded", "skipped", "total"}`` counts.
+    """
+    seeded = 0
+    skipped = 0
+    for spec in specs:
+        existing = get_provider_profile_by_name(db_path, spec["name"])
+        if existing is None:
+            create_provider_profile(
+                db_path,
+                name=spec["name"],
+                type=spec["type"],
+                command=spec["command"],
+                default_timeout_seconds=spec["default_timeout_seconds"],
+                default_args=spec.get("default_args"),
+                enabled=spec.get("enabled", True),
+            )
+            seeded += 1
+        elif force:
+            update_provider_profile(
+                db_path,
+                existing.id,
+                type=spec["type"],
+                command=spec["command"],
+                default_timeout_seconds=spec["default_timeout_seconds"],
+                default_args=spec.get("default_args"),
+                enabled=spec.get("enabled", True),
+            )
+            skipped += 1
+        else:
+            skipped += 1
+    return {"seeded": seeded, "skipped": skipped, "total": len(specs)}
+
+
 # -- search (SQLite LIKE; no external engine, no disk reads) ------------------
 
 
@@ -1674,4 +1852,18 @@ def _row_to_cancellation(row: sqlite3.Row) -> RunCancellation:
         requested_at=row["requested_at"],
         completed_at=_opt(row, "completed_at"),
         error=_opt(row, "error"),
+    )
+
+
+def _row_to_provider_profile(row: sqlite3.Row) -> ProviderProfile:
+    return ProviderProfile(
+        id=row["id"],
+        name=row["name"],
+        type=row["type"],
+        command=row["command"],
+        default_timeout_seconds=row["default_timeout_seconds"],
+        default_args=_opt(row, "default_args"),
+        enabled=bool(row["enabled"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

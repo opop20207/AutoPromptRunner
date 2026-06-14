@@ -58,11 +58,14 @@ class CodexRunner(AgentRunner):
         command: str = "codex",
         timeout_seconds: int = 1800,
         workspace: Optional[str] = None,
+        extra_args: Optional[List[str]] = None,
     ) -> None:
         self.command = command
         # Clamp to the safety hard limit so a runner can never exceed the max runtime.
         self.timeout_seconds = max(1, min(int(timeout_seconds), config.TIMEOUT_SECONDS_HARD_LIMIT))
         self.workspace = workspace
+        # Extra args come from a provider profile's default_args (already split, no shell).
+        self.extra_args = list(extra_args or [])
         if self.workspace is not None and not _ospath.isdir(self.workspace):
             raise ValueError(f"workspace does not exist or is not a directory: {self.workspace}")
 
@@ -71,10 +74,10 @@ class CodexRunner(AgentRunner):
         return "codex"
 
     def _build_argv(self, prompt: str) -> List[str]:
-        # Non-interactive execution mode: ``codex exec "<prompt>"``. No shell is used,
-        # and the prompt is passed as a single argument (never interpolated into a
+        # Non-interactive execution mode: ``codex exec [extra args] "<prompt>"``. No shell is
+        # used, and the prompt is passed as a single argument (never interpolated into a
         # shell string), so no quoting/injection concerns arise.
-        return [self.command, "exec", prompt]
+        return [self.command, "exec", *self.extra_args, prompt]
 
     def run(self, prompt: str, run_id: Optional[int] = None) -> AgentResult:
         started_at = _now_iso()

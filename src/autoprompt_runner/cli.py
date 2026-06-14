@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, cancel, chains, compare, locks, queue, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, cancel, chains, compare, locks, providers, queue, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -98,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_search_commands(subparsers)
     _add_compare_commands(subparsers)
     _add_chain_commands(subparsers)
+    _add_provider_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -417,6 +418,60 @@ def _add_chain_commands(subparsers: argparse._SubParsersAction) -> None:
         "--errors-only", action="store_true", help="Show failed/error nodes only."
     )
     _add_db_path(show_parser)
+
+
+def _add_provider_commands(subparsers: argparse._SubParsersAction) -> None:
+    provider_parser = subparsers.add_parser("provider", help="Manage provider profiles (command/timeout config).")
+    provider_sub = provider_parser.add_subparsers(dest="provider_command", metavar="subcommand")
+
+    seed_parser = provider_sub.add_parser("seed", help="Create the default provider profiles if missing.")
+    seed_parser.add_argument("--force", action="store_true", help="Reset existing default profiles to defaults.")
+    _add_db_path(seed_parser)
+
+    list_parser = provider_sub.add_parser("list", help="List provider profiles with availability.")
+    _add_db_path(list_parser)
+
+    show_parser = provider_sub.add_parser("show", help="Show one provider profile and its availability.")
+    show_parser.add_argument("--name", required=True, help="Provider profile name.")
+    _add_db_path(show_parser)
+
+    add_parser = provider_sub.add_parser("add", help="Create a provider profile.")
+    add_parser.add_argument("--name", required=True, help="Unique profile name.")
+    add_parser.add_argument("--type", required=True, help="Provider type: mock, claude-code, or codex.")
+    # dest avoids colliding with the top-level subparser dest "command".
+    add_parser.add_argument("--command", dest="command_exec", required=True, help="Executable to invoke (no arguments).")
+    add_parser.add_argument(
+        "--timeout-seconds", dest="timeout_seconds", type=int, default=1800, help="Default timeout (>= 1)."
+    )
+    add_parser.add_argument("--default-args", dest="default_args", default=None, help="Space-separated default args.")
+    add_parser.add_argument("--disabled", action="store_true", help="Create the profile disabled.")
+    _add_db_path(add_parser)
+
+    update_parser = provider_sub.add_parser("update", help="Update editable fields of a provider profile.")
+    update_parser.add_argument("--name", required=True, help="Profile to update.")
+    update_parser.add_argument("--type", default=None, help="New provider type.")
+    update_parser.add_argument("--command", dest="command_exec", default=None, help="New command.")
+    update_parser.add_argument(
+        "--timeout-seconds", dest="timeout_seconds", type=int, default=None, help="New default timeout."
+    )
+    update_parser.add_argument("--default-args", dest="default_args", default=None, help="New default args.")
+    _add_db_path(update_parser)
+
+    enable_parser = provider_sub.add_parser("enable", help="Enable a provider profile.")
+    enable_parser.add_argument("--name", required=True, help="Profile name.")
+    _add_db_path(enable_parser)
+
+    disable_parser = provider_sub.add_parser("disable", help="Disable a provider profile.")
+    disable_parser.add_argument("--name", required=True, help="Profile name.")
+    _add_db_path(disable_parser)
+
+    delete_parser = provider_sub.add_parser("delete", help="Delete a provider profile (no external tool is removed).")
+    delete_parser.add_argument("--name", required=True, help="Profile name.")
+    _add_db_path(delete_parser)
+
+    check_parser = provider_sub.add_parser("check", help="Check a provider's command availability.")
+    check_parser.add_argument("--name", required=True, help="Profile name.")
+    _add_db_path(check_parser)
 
 
 # -- simple commands ---------------------------------------------------------
@@ -1192,6 +1247,163 @@ def _dispatch_chain(args: argparse.Namespace) -> int:
     return EXIT_USAGE
 
 
+# -- provider commands -------------------------------------------------------
+
+
+def _provider_avail(profile) -> str:
+    return "available" if providers.check_provider_available(profile) else "unavailable"
+
+
+def cmd_provider_seed(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    result = providers.seed_default_provider_profiles(db_path, force=args.force)
+    print(f"Provider profiles: {result['seeded']} seeded, {result['skipped']} skipped, {result['total']} total.")
+    return EXIT_OK
+
+
+def cmd_provider_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    profiles = storage.list_provider_profiles(db_path)
+    if not profiles:
+        print("No provider profiles. Run 'provider seed' to create the defaults.")
+        return EXIT_OK
+    print(f"{'NAME':<16}  {'TYPE':<12}  {'COMMAND':<12}  {'ENABLED':<7}  {'TIMEOUT':>7}  AVAILABILITY")
+    for p in profiles:
+        print(
+            f"{p.name:<16}  {p.type:<12}  {p.command:<12}  {('yes' if p.enabled else 'no'):<7}  "
+            f"{p.default_timeout_seconds:>7}  {_provider_avail(p)}"
+        )
+    return EXIT_OK
+
+
+def cmd_provider_show(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    profile = storage.get_provider_profile_by_name(db_path, args.name)
+    if profile is None:
+        print(f"error: provider profile '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    print(f"Name:        {profile.name}")
+    print(f"Type:        {profile.type}")
+    print(f"Command:     {profile.command}")
+    print(f"Timeout:     {profile.default_timeout_seconds}s")
+    print(f"Default args:{' ' + profile.default_args if profile.default_args else ' (none)'}")
+    print(f"Enabled:     {'yes' if profile.enabled else 'no'}")
+    print(f"Availability:{' ' + _provider_avail(profile)}")
+    print(f"Created:     {profile.created_at}")
+    print(f"Updated:     {profile.updated_at}")
+    return EXIT_OK
+
+
+def cmd_provider_add(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    if storage.get_provider_profile_by_name(db_path, args.name) is not None:
+        print(f"error: provider profile '{args.name}' already exists", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        provider_type = providers.validate_provider_type(args.type)
+        command = providers.validate_provider_command(args.command_exec)
+        timeout = providers.validate_provider_timeout(args.timeout_seconds)
+    except providers.ProviderError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    storage.create_provider_profile(
+        db_path, name=args.name, type=provider_type, command=command,
+        default_timeout_seconds=timeout, default_args=args.default_args, enabled=not args.disabled,
+    )
+    print(f"Created provider profile '{args.name}' ({provider_type}).")
+    return EXIT_OK
+
+
+def cmd_provider_update(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    profile = storage.get_provider_profile_by_name(db_path, args.name)
+    if profile is None:
+        print(f"error: provider profile '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    try:
+        new_type = providers.validate_provider_type(args.type) if args.type is not None else None
+        new_command = (
+            providers.validate_provider_command(args.command_exec) if args.command_exec is not None else None
+        )
+        new_timeout = (
+            providers.validate_provider_timeout(args.timeout_seconds) if args.timeout_seconds is not None else None
+        )
+    except providers.ProviderError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    storage.update_provider_profile(
+        db_path, profile.id, type=new_type, command=new_command,
+        default_timeout_seconds=new_timeout,
+        default_args=args.default_args if args.default_args is not None else storage._UNSET,
+    )
+    print(f"Updated provider profile '{args.name}'.")
+    return EXIT_OK
+
+
+def cmd_provider_enable(args: argparse.Namespace) -> int:
+    return _provider_set_enabled(args, True)
+
+
+def cmd_provider_disable(args: argparse.Namespace) -> int:
+    return _provider_set_enabled(args, False)
+
+
+def _provider_set_enabled(args: argparse.Namespace, enabled: bool) -> int:
+    db_path = storage.init_db(args.db_path)
+    profile = storage.get_provider_profile_by_name(db_path, args.name)
+    if profile is None:
+        print(f"error: provider profile '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    storage.set_provider_enabled(db_path, profile.id, enabled)
+    print(f"Provider profile '{args.name}' {'enabled' if enabled else 'disabled'}.")
+    return EXIT_OK
+
+
+def cmd_provider_delete(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    profile = storage.get_provider_profile_by_name(db_path, args.name)
+    if profile is None:
+        print(f"error: provider profile '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    storage.delete_provider_profile(db_path, profile.id)
+    print(f"Deleted provider profile '{args.name}'. (No external CLI tool was removed.)")
+    return EXIT_OK
+
+
+def cmd_provider_check(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    profile = storage.get_provider_profile_by_name(db_path, args.name)
+    if profile is None:
+        print(f"error: provider profile '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    available = providers.check_provider_available(profile)
+    status = "available" if available else "unavailable"
+    print(f"{profile.name} ({profile.type}): command '{profile.command}' is {status}.")
+    return EXIT_OK if available else EXIT_RUN_FAILED
+
+
+def _dispatch_provider(args: argparse.Namespace) -> int:
+    handlers = {
+        "seed": cmd_provider_seed,
+        "list": cmd_provider_list,
+        "show": cmd_provider_show,
+        "add": cmd_provider_add,
+        "update": cmd_provider_update,
+        "enable": cmd_provider_enable,
+        "disable": cmd_provider_disable,
+        "delete": cmd_provider_delete,
+        "check": cmd_provider_check,
+    }
+    handler = handlers.get(getattr(args, "provider_command", None))
+    if handler is None:
+        print(
+            "error: provider requires a subcommand: seed, list, show, add, update, enable, disable, delete, check",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- run + run history -------------------------------------------------------
 
 
@@ -1499,6 +1711,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_compare(args)
     if args.command == "chain":
         return _dispatch_chain(args)
+    if args.command == "provider":
+        return _dispatch_provider(args)
     if args.command == "run":
         if getattr(args, "run_command", None) == "cancel":
             return cmd_run_cancel(args)

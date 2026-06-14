@@ -30,6 +30,7 @@ above (or scroll) for the full feature tour; each capability has its own section
 - Search across runs, logs, prompts, and artifacts (SQLite `LIKE`)
 - Compare two runs (metadata, steps, changed files, diff stats, artifacts)
 - Prompt chain history timeline (root → step prompts → next prompts, per run)
+- Provider profiles (configurable command / timeout / args + availability checks)
 - Config file + environment overrides
 - Safety checks (blocked commands, secret-file warnings, hard limits)
 
@@ -778,6 +779,92 @@ prompt (with copy buttons) and the per-type artifact counts. A filter switches b
 working tree); it is linear per run (no branch graph) and uses no graph-visualization
 library; there is no semantic prompt analysis; and it performs no file-system reads.
 
+## Provider settings (provider profiles)
+
+A **provider profile** configures how a provider is invoked -- its `command` executable, a
+`default_timeout_seconds`, and optional space-separated `default_args` -- without hardcoding
+those in the runners. A profile has a `name`, a `type` (`mock`, `claude-code`, or `codex`),
+and an `enabled` flag, and its **name may differ from its type**, so you can keep several
+configurations for one runner (for example a `claude-fast` profile of type `claude-code`).
+
+Profiles are stored in the local SQLite database (`provider_profiles` table). **They never
+store secrets** -- only non-secret command/argument settings; AutoPromptRunner reads no
+credentials from them. **Availability** is checked by *command discovery only*
+(`shutil.which`): it reports whether an external command is on `PATH` and **never executes
+the real Claude Code or Codex CLI**, so it is safe to check anywhere (mock is always
+available). Seed the built-in defaults with `provider seed`:
+
+| Name | Type | Command | Default timeout | Enabled |
+| --- | --- | --- | --- | --- |
+| `mock` | `mock` | `mock` | 30 | yes |
+| `claude-code` | `claude-code` | `claude` | 1800 | yes |
+| `codex` | `codex` | `codex` | 1800 | yes |
+
+Seeding never overwrites a profile you have modified unless you pass `--force`.
+
+**Provider resolution at run time.** A run's `--provider` (or a project's default provider)
+is resolved as: an explicit **provider profile name** → the project default → the config
+default → the built-in `mock` fallback. A disabled profile is rejected with a clean error,
+and an external profile whose command is unavailable is rejected **before** execution
+(mock is exempt); an explicit `--timeout-seconds` overrides the profile's default timeout.
+The built-in names `mock` / `claude-code` / `codex` keep working whether or not profiles are
+seeded.
+
+CLI (`provider` command group):
+
+```
+python -m autoprompt_runner.cli provider seed
+python -m autoprompt_runner.cli provider list
+python -m autoprompt_runner.cli provider show --name claude-code
+# a custom claude profile (note: use --default-args="--flag" form for values starting with -)
+python -m autoprompt_runner.cli provider add --name claude-fast --type claude-code --command claude --timeout-seconds 1200
+# a custom codex profile
+python -m autoprompt_runner.cli provider add --name codex-fast --type codex --command codex --timeout-seconds 900
+python -m autoprompt_runner.cli provider update --name claude-fast --timeout-seconds 1800
+python -m autoprompt_runner.cli provider enable --name claude-fast
+python -m autoprompt_runner.cli provider disable --name claude-fast
+python -m autoprompt_runner.cli provider check --name claude-code   # exits non-zero if unavailable
+python -m autoprompt_runner.cli provider delete --name claude-fast  # removes the profile only
+```
+
+Then run against a profile by name (the default `claude-code` profile, or a custom one):
+
+```
+python -m autoprompt_runner.cli run --project FactoryColony --provider claude-code --prompt "Continue next task"
+python -m autoprompt_runner.cli run --project FactoryColony --provider claude-fast --prompt "Continue next task"
+```
+
+API (`/providers` route group; same local database):
+
+```
+curl -X POST http://127.0.0.1:8000/providers/seed
+curl http://127.0.0.1:8000/providers
+curl -X POST http://127.0.0.1:8000/providers \
+  -H "Content-Type: application/json" \
+  -d '{"name":"claude-fast","type":"claude-code","command":"claude","default_timeout_seconds":1200}'
+curl http://127.0.0.1:8000/providers/claude-fast
+curl -X PATCH http://127.0.0.1:8000/providers/claude-fast \
+  -H "Content-Type: application/json" -d '{"default_timeout_seconds":1800}'
+curl -X POST http://127.0.0.1:8000/providers/claude-fast/disable
+curl -X POST http://127.0.0.1:8000/providers/claude-fast/enable
+curl http://127.0.0.1:8000/providers/claude-code/check
+curl -X DELETE http://127.0.0.1:8000/providers/claude-fast
+```
+
+`GET /providers` returns each profile with a computed `available` flag,
+`GET /providers/{name}/check` returns an availability result, and `POST /runs` rejects a
+disabled provider (400) or an unavailable external provider (400) before creating the run.
+
+In the **web UI**, the *Providers* section has a provider form (create / edit: name, type,
+command, default timeout, default args, enabled), a *Provider availability* health panel
+(command-discovery only -- no agent is executed), and a list with per-row **Check** /
+**Enable** / **Disable** / **Edit** / **Delete** (with confirmation) actions plus a *Seed
+defaults* button. The *New Run* provider dropdown is populated from the provider profiles,
+marking disabled (unselectable) and unavailable profiles.
+
+> **Never store secrets in a provider profile.** The `command` and `default_args` are
+> non-secret invocation settings only; credentials belong with the agent CLI's own auth.
+
 ## Claude Code provider
 
 The `claude-code` provider runs the real Claude Code CLI as a subprocess.
@@ -882,8 +969,9 @@ A minimal React + Vite + TypeScript **dashboard** lives in `frontend/` (see
 [frontend/README.md](frontend/README.md)). It is a thin, **local-first and unauthenticated**
 shell over the HTTP API -- no router, no state library, no UI framework. A left **sidebar**
 navigates between sections with simple local state (no routing): **Overview**,
-**Projects**, **Templates**, **Worktrees**, **New Run**, **Runs**, **Search**, **Compare**,
-**Queue**, and -- once a run is open -- **Run Detail**. The active section is highlighted.
+**Projects**, **Templates**, **Worktrees**, **Providers**, **New Run**, **Runs**, **Search**,
+**Compare**, **Queue**, and -- once a run is open -- **Run Detail**. The active section is
+highlighted.
 
 - **Overview** shows compact cards: backend health, recent-run count, queued / running
   jobs, failed runs, the default and selected project, and a reminder to start a worker
@@ -1008,6 +1096,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Search across runs, logs, prompts, and artifacts (CLI / API / web UI)
 - [x] Compare two runs (CLI / API / web UI)
 - [x] Prompt chain history view (CLI / API / web UI)
+- [x] Provider profiles / settings management (CLI / API / web UI)
 - [x] Config file / environment overrides (`config show` / `validate` / `init`)
 - [x] FastAPI backend and the React/Vite frontend build
 - [x] End-to-end CLI and API flow tests pass

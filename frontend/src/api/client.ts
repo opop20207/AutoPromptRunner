@@ -14,6 +14,10 @@ import type {
   RunLogs,
   RunSummary,
   PromptChainResponse,
+  ProviderAvailability,
+  ProviderProfile,
+  ProviderProfileCreate,
+  ProviderProfileUpdate,
   QueueJob,
   RunComparisonResponse,
   RunLock,
@@ -158,6 +162,25 @@ export const api = {
     runId: number,
     params: { full_prompts?: boolean; include_artifacts?: boolean; errors_only?: boolean } = {},
   ) => request<PromptChainResponse>(`/chains/runs/${runId}${queryString(params)}`),
+  listProviders: () => request<ProviderProfile[]>("/providers"),
+  seedProviders: () =>
+    request<{ seeded: number; skipped: number; total: number }>("/providers/seed", { method: "POST" }),
+  createProvider: (body: ProviderProfileCreate) =>
+    request<ProviderProfile>("/providers", { method: "POST", body: JSON.stringify(body) }),
+  getProvider: (name: string) => request<ProviderProfile>(`/providers/${encodeURIComponent(name)}`),
+  updateProvider: (name: string, body: ProviderProfileUpdate) =>
+    request<ProviderProfile>(`/providers/${encodeURIComponent(name)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  enableProvider: (name: string) =>
+    request<ProviderProfile>(`/providers/${encodeURIComponent(name)}/enable`, { method: "POST" }),
+  disableProvider: (name: string) =>
+    request<ProviderProfile>(`/providers/${encodeURIComponent(name)}/disable`, { method: "POST" }),
+  deleteProvider: (name: string) =>
+    request<{ deleted: string }>(`/providers/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  checkProvider: (name: string) =>
+    request<ProviderAvailability>(`/providers/${encodeURIComponent(name)}/check`),
 };
 
 export function errorMessage(err: unknown): string {
