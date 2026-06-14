@@ -7,6 +7,7 @@ import { ApprovalPanel } from "./ApprovalPanel";
 import { ArtifactList } from "./ArtifactList";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { CancelPanel } from "./CancelPanel";
+import { CheckpointPanel } from "./CheckpointPanel";
 import { ChangedFilesPanel } from "./ChangedFilesPanel";
 import { DiffStatPanel } from "./DiffStatPanel";
 import { Section } from "./Layout";
@@ -133,6 +134,17 @@ export function RunDetail({
           <div className="subsection">
             <h3>Safety</h3>
             <SafetyPanel artifacts={detail.artifacts} />
+          </div>
+
+          {/* 4a. Checkpoints & rollback (near Safety; Git workspaces only) */}
+          <div className="subsection">
+            <h3>Checkpoints &amp; rollback</h3>
+            <CheckpointPanel
+              runId={detail.id}
+              runStatus={detail.status}
+              refreshKey={artifactRefresh}
+              onChanged={onChanged}
+            />
           </div>
 
           {/* 4b. Failure recovery (the panel renders only when FAILED or attempts exist) */}

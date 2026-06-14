@@ -242,6 +242,35 @@ class WorkerHeartbeat:
 
 
 @dataclass
+class RunCheckpoint:
+    """A pre-execution workspace checkpoint, persisted in ``run_checkpoints``.
+
+    Captures the read-only Git state of a run's workspace *before* the agent executes, so the
+    user can later inspect or roll back to it. ``git_head_before`` / ``git_branch_before`` /
+    ``git_status_before`` are the captured HEAD commit, branch, and porcelain status;
+    ``checkpoint_ref`` is the ref a rollback would reset to (the captured HEAD -- no new commit
+    or tag is created). ``status`` is ``CREATED`` / ``RESTORED`` / ``FAILED`` / ``SKIPPED``
+    (see ``autoprompt_runner.checkpoints``). A non-Git or missing workspace yields a SKIPPED
+    record and never fails the run. ``restore_error`` holds a skip reason (SKIPPED) or a
+    rollback error (FAILED). The checkpoint is metadata only -- it stores no file contents and
+    no secrets.
+    """
+
+    id: int
+    run_id: int
+    step_id: Optional[int]
+    workspace_path: str
+    git_head_before: Optional[str]
+    git_branch_before: Optional[str]
+    git_status_before: Optional[str]
+    checkpoint_ref: Optional[str]
+    status: str
+    created_at: str
+    restored_at: Optional[str] = None
+    restore_error: Optional[str] = None
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

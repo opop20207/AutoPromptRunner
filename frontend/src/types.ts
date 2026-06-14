@@ -28,6 +28,7 @@ export const ARTIFACT_TYPES = [
   "stale_run_detected",
   "stale_lock_expired",
   "stale_queue_job_failed",
+  "checkpoint_rollback",
 ] as const;
 export type ArtifactTypeFilter = (typeof ARTIFACT_TYPES)[number];
 
@@ -420,7 +421,9 @@ export type RunEventType =
   | "reconciliation_finished"
   | "stale_run_failed"
   | "stale_lock_expired"
-  | "stale_job_failed";
+  | "stale_job_failed"
+  | "checkpoint_created"
+  | "checkpoint_rolled_back";
 
 export interface RunEvent {
   id: number;
@@ -557,3 +560,54 @@ export const RECONCILIATION_ARTIFACT_TYPES = [
   "stale_lock_expired",
   "stale_queue_job_failed",
 ] as const;
+
+// -- run checkpoints / rollback (mirrors autoprompt_runner.checkpoints) --
+
+export type CheckpointStatus = "CREATED" | "RESTORED" | "FAILED" | "SKIPPED";
+
+export interface RunCheckpoint {
+  id: number;
+  run_id: number;
+  step_id?: number | null;
+  workspace_path: string;
+  git_head_before?: string | null;
+  git_branch_before?: string | null;
+  git_status_before?: string | null;
+  checkpoint_ref?: string | null;
+  status: string;
+  created_at: string;
+  restored_at?: string | null;
+  restore_error?: string | null;
+}
+
+export interface RollbackPlan {
+  checkpoint_id: number;
+  run_id: number;
+  workspace_path: string;
+  status: string;
+  mode: string;
+  target_head?: string | null;
+  target_branch?: string | null;
+  current_head?: string | null;
+  current_branch?: string | null;
+  is_git_repo: boolean;
+  preexisting_dirty: boolean;
+  current_dirty: boolean;
+  workspace_locked: boolean;
+  can_rollback: boolean;
+  requires_force: boolean;
+  safe: boolean;
+  summary: string;
+  warnings: string[];
+}
+
+export interface RollbackResult {
+  checkpoint_id: number;
+  run_id: number;
+  status: string;
+  restored: boolean;
+  target_head?: string | null;
+  git_head_after?: string | null;
+  message: string;
+  error?: string | null;
+}

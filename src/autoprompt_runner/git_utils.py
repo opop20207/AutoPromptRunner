@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 # Mutating Git subcommands that must never be run by this tool.
 _DESTRUCTIVE_SUBCOMMANDS = frozenset(
@@ -113,3 +113,69 @@ def get_changed_files(path: str) -> List[str]:
         if entry:
             files.append(entry)
     return files
+
+
+# -- checkpoint helpers ------------------------------------------------------
+# Read-only state capture for run checkpoints, plus the single guarded destructive
+# command (git reset --hard) used only by the explicit rollback path.
+
+
+def get_git_head(path: str) -> Optional[str]:
+    """Return the current HEAD commit hash (read-only), or ``None`` if unavailable."""
+    result = run_git_command(path, ["rev-parse", "HEAD"])
+    head = result.stdout.strip()
+    return head if result.ok and head else None
+
+
+def get_git_branch(path: str) -> Optional[str]:
+    """Return the current branch name (``HEAD`` when detached), or ``None`` if unavailable."""
+    result = run_git_command(path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    branch = result.stdout.strip()
+    return branch if result.ok and branch else None
+
+
+def get_git_status_porcelain(path: str) -> str:
+    """Return ``git status --porcelain`` output (read-only; alias of :func:`get_git_status`)."""
+    return get_git_status(path)
+
+
+def is_git_dirty(path: str) -> bool:
+    """Return True if the work tree has uncommitted changes (read-only)."""
+    return bool(get_git_status_porcelain(path).strip())
+
+
+def git_reset_hard(path: str, target_ref: str, confirm: bool = False, timeout_seconds: int = 30) -> GitCommandResult:
+    """Run ``git reset --hard <target_ref>`` in ``path`` -- DESTRUCTIVE.
+
+    This is the only mutating Git command in the codebase. It must be called *only* from
+    :func:`autoprompt_runner.checkpoints.rollback_checkpoint`, and only after the user has
+    explicitly confirmed: the explicit ``confirm`` guard raises ``ValueError`` unless it is
+    exactly ``True``. It discards uncommitted changes in the work tree, so callers must have
+    warned the user and recorded a safety artifact first. It never runs ``git clean``, never
+    deletes files outside Git's own reset, and never pushes/pulls/merges. The target ref is
+    validated (non-empty, not an option flag) to avoid argument injection. Missing git,
+    timeouts, and OS errors return a non-zero result rather than raising.
+    """
+    if confirm is not True:
+        raise ValueError("git_reset_hard requires confirm=True (it is destructive)")
+    ref = (target_ref or "").strip()
+    if not ref or ref.startswith("-"):
+        raise ValueError("git_reset_hard requires a valid target ref")
+    argv = ["git", "reset", "--hard", ref]
+    try:
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            cwd=path,
+            shell=False,
+            check=False,
+        )
+        return GitCommandResult(completed.returncode, completed.stdout or "", completed.stderr or "")
+    except FileNotFoundError:
+        return GitCommandResult(_EXIT_NOT_FOUND, "", "git: command not found")
+    except subprocess.TimeoutExpired:
+        return GitCommandResult(_EXIT_TIMEOUT, "", f"git: timed out after {timeout_seconds}s")
+    except OSError as exc:
+        return GitCommandResult(_EXIT_ERROR, "", f"git: failed: {exc}")

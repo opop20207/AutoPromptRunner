@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, cancel, config, events, locks, processes, reconcile, safety, storage, templates, worktrees
+from .. import artifacts, cancel, checkpoints, config, events, locks, processes, reconcile, safety, storage, templates, worktrees
 from .. import providers as provider_mgmt
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
@@ -678,6 +678,11 @@ class RunService:
                 return self._cancelled_report(run_id, loop_index, provider)
             git_capture = artifacts.workspace_is_git(workspace)
             status_before = artifacts.capture_git_status(workspace) if git_capture else ""
+            # Capture a pre-execution checkpoint of the Git workspace (read-only; best-effort).
+            # Only for Git workspaces -- a non-Git/missing workspace records nothing here so a
+            # normal run is not polluted with SKIPPED rows. Never fails the run.
+            if git_capture:
+                self._maybe_create_checkpoint(run_id, workspace)
             runner = self._make_runner(provider, workspace, timeout_seconds)
             # Live log streaming: emit each captured output line as an event. Streams that the
             # runner reports here are not re-emitted in full below (avoids duplicate content).
@@ -785,6 +790,17 @@ class RunService:
             # Auto-run: advance to the next step with the generated prompt.
             loop_index += 1
             prompt = nxt.prompt
+
+    def _maybe_create_checkpoint(self, run_id: int, workspace: Optional[str]) -> None:
+        """Record a pre-execution Git checkpoint (best-effort; never breaks a run).
+
+        Captures only the read-only Git state (HEAD / branch / status); it creates no commit,
+        tag, or stash and never modifies the workspace. See :mod:`autoprompt_runner.checkpoints`.
+        """
+        try:
+            checkpoints.create_checkpoint(self.db_path, run_id, None, workspace)
+        except Exception:  # noqa: BLE001 - checkpointing must never fail a run
+            pass
 
     def _git_payloads(self, workspace: Optional[str], git_capture: bool, status_before: str) -> List[ArtifactPayload]:
         """Capture the Git artifact payloads for a step (or a single skip warning)."""

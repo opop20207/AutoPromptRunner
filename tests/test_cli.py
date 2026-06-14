@@ -23,7 +23,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import __version__, locks, storage  # noqa: E402
+from autoprompt_runner import __version__, checkpoints, locks, storage  # noqa: E402
 from autoprompt_runner.cli import main  # noqa: E402
 from autoprompt_runner.state import RunStatus  # noqa: E402
 
@@ -720,6 +720,68 @@ class SystemCliTests(unittest.TestCase):
 
     def test_system_requires_subcommand(self):
         code, out, err = run_cli(["system"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("subcommand", err.lower())
+
+
+class CheckpointCliTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+        self.ws = os.path.join(self._tmp.name, "repo")
+        _init_repo(self.ws)  # creates a git repo with README.md == "seed\n" committed
+        self.run_id = storage.create_run(
+            self.db, root_prompt="p", provider="mock", max_loops=1, require_approval=False, workspace=self.ws
+        )
+        self.cp = checkpoints.create_checkpoint(self.db, self.run_id, None, self.ws)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _readme(self):
+        with open(os.path.join(self.ws, "README.md"), encoding="utf-8") as handle:
+            return handle.read()
+
+    def _edit_readme(self):
+        with open(os.path.join(self.ws, "README.md"), "w", encoding="utf-8") as handle:
+            handle.write("CHANGED\n")
+
+    def test_list(self):
+        code, out, err = run_cli(["checkpoint", "list", "--run-id", str(self.run_id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("CREATED", out)
+
+    def test_show_includes_rollback_plan(self):
+        code, out, err = run_cli(["checkpoint", "show", "--id", str(self.cp.id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Checkpoint #{self.cp.id}", out)
+        self.assertIn("Rollback plan", out)
+
+    def test_rollback_plan_does_not_modify_files(self):
+        self._edit_readme()
+        code, out, err = run_cli(["checkpoint", "rollback-plan", "--id", str(self.cp.id), "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("git reset --hard", out)
+        self.assertEqual(self._readme(), "CHANGED\n")  # the plan changed nothing
+
+    def test_rollback_requires_confirm(self):
+        code, out, err = run_cli(["checkpoint", "rollback", "--id", str(self.cp.id), "--db-path", self.db])
+        self.assertNotEqual(code, 0)
+        self.assertIn("confirm", err.lower())
+
+    def test_rollback_with_confirm_restores(self):
+        self._edit_readme()
+        code, out, err = run_cli(
+            ["checkpoint", "rollback", "--id", str(self.cp.id), "--confirm", "--db-path", self.db]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("rolled back", out.lower())
+        self.assertEqual(self._readme(), "seed\n")  # restored to the committed state
+        self.assertEqual(checkpoints.get_checkpoint(self.db, self.cp.id).status, storage.CHECKPOINT_RESTORED)
+
+    def test_requires_subcommand(self):
+        code, out, err = run_cli(["checkpoint"])
         self.assertNotEqual(code, 0)
         self.assertIn("subcommand", err.lower())
 

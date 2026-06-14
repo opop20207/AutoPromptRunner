@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, auth, cancel, chains, compare, export_import, locks, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, auth, cancel, chains, checkpoints, compare, export_import, locks, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -100,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_chain_commands(subparsers)
     _add_provider_commands(subparsers)
     _add_recovery_commands(subparsers)
+    _add_checkpoint_commands(subparsers)
     _add_export_import_commands(subparsers)
     _add_auth_commands(subparsers)
     _add_system_commands(subparsers)
@@ -531,6 +532,40 @@ def _add_recovery_commands(subparsers: argparse._SubParsersAction) -> None:
     list_parser = recovery_sub.add_parser("list", help="List recovery attempts (optionally for one run).")
     list_parser.add_argument("--run-id", dest="run_id", type=int, default=None, help="Filter by source run id.")
     _add_db_path(list_parser)
+
+
+def _add_checkpoint_commands(subparsers: argparse._SubParsersAction) -> None:
+    cp_parser = subparsers.add_parser(
+        "checkpoint", help="Inspect run checkpoints and roll a workspace back (explicit, Git-only)."
+    )
+    cp_sub = cp_parser.add_subparsers(dest="checkpoint_command", metavar="subcommand")
+
+    list_parser = cp_sub.add_parser("list", help="List checkpoints for a run.")
+    list_parser.add_argument("--run-id", dest="run_id", type=int, required=True, help="Run id.")
+    _add_db_path(list_parser)
+
+    show_parser = cp_sub.add_parser("show", help="Show a checkpoint's detail and its rollback plan.")
+    show_parser.add_argument("--id", dest="checkpoint_id", type=int, required=True, help="Checkpoint id.")
+    _add_db_path(show_parser)
+
+    plan_parser = cp_sub.add_parser(
+        "rollback-plan", help="Show what a rollback would do (read-only; changes nothing)."
+    )
+    plan_parser.add_argument("--id", dest="checkpoint_id", type=int, required=True, help="Checkpoint id.")
+    _add_db_path(plan_parser)
+
+    rollback_parser = cp_sub.add_parser(
+        "rollback", help="Roll the workspace back to the checkpoint (git reset --hard; requires --confirm)."
+    )
+    rollback_parser.add_argument("--id", dest="checkpoint_id", type=int, required=True, help="Checkpoint id.")
+    rollback_parser.add_argument(
+        "--confirm", action="store_true", help="Required: confirm the destructive rollback."
+    )
+    rollback_parser.add_argument(
+        "--force", action="store_true",
+        help="Override the safety refusal when the workspace has changes not created by the run.",
+    )
+    _add_db_path(rollback_parser)
 
 
 def _add_export_import_commands(subparsers: argparse._SubParsersAction) -> None:
@@ -1660,6 +1695,117 @@ def _dispatch_recovery(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+# -- checkpoint commands -----------------------------------------------------
+
+
+def _checkpoint_exit(kind: str) -> int:
+    if kind == "not_found":
+        return EXIT_NOT_FOUND
+    if kind == "not_confirmed":
+        return EXIT_USAGE
+    return EXIT_RUN_FAILED  # "unsafe" and any other refusal
+
+
+def cmd_checkpoint_list(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    items = checkpoints.list_checkpoints(db_path, args.run_id)
+    if not items:
+        print(f"No checkpoints for run #{args.run_id}.")
+        return EXIT_OK
+    print(f"{'ID':>4}  {'STEP':>4}  {'STATUS':<9}  {'HEAD':<12}  {'BRANCH':<16}  {'DIRTY':<5}  WORKSPACE")
+    for cp in items:
+        head = (cp.git_head_before or "-")[:12]
+        branch = (cp.git_branch_before or "-")[:16]
+        step = str(cp.step_id) if cp.step_id is not None else "-"
+        dirty = "yes" if checkpoints.detect_preexisting_dirty_state(cp) else "no"
+        print(f"{cp.id:>4}  {step:>4}  {cp.status:<9}  {head:<12}  {branch:<16}  {dirty:<5}  {cp.workspace_path}")
+    return EXIT_OK
+
+
+def cmd_checkpoint_show(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    cp = checkpoints.get_checkpoint(db_path, args.checkpoint_id)
+    if cp is None:
+        print(f"error: checkpoint {args.checkpoint_id} not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    print(f"Checkpoint #{cp.id} (run #{cp.run_id}) [{cp.status}]")
+    print(f"  workspace: {cp.workspace_path}")
+    print(f"  head:      {cp.git_head_before or '-'}")
+    print(f"  branch:    {cp.git_branch_before or '-'}")
+    print(f"  created:   {cp.created_at}")
+    if checkpoints.detect_preexisting_dirty_state(cp):
+        print("  warning:   workspace had uncommitted changes before the run (dirty)")
+    if cp.restored_at:
+        print(f"  restored:  {cp.restored_at}")
+    if cp.restore_error:
+        print(f"  note:      {cp.restore_error}")
+    try:
+        plan = checkpoints.build_rollback_plan(db_path, cp.id)
+    except checkpoints.CheckpointError as exc:
+        print(f"  plan:      unavailable ({exc})")
+        return EXIT_OK
+    _print_rollback_plan(plan)
+    return EXIT_OK
+
+
+def cmd_checkpoint_rollback_plan(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    try:
+        plan = checkpoints.build_rollback_plan(db_path, args.checkpoint_id)
+    except checkpoints.CheckpointError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _checkpoint_exit(exc.kind)
+    _print_rollback_plan(plan)
+    return EXIT_OK
+
+
+def _print_rollback_plan(plan) -> None:
+    print(f"Rollback plan for checkpoint #{plan.checkpoint_id} (run #{plan.run_id}):")
+    print(f"  {plan.summary}")
+    print(f"  target HEAD:  {plan.target_head or '-'}  (branch {plan.target_branch or '-'})")
+    print(f"  current HEAD: {plan.current_head or '-'}  (branch {plan.current_branch or '-'})")
+    print(f"  can rollback: {plan.can_rollback}   safe: {plan.safe}   requires --force: {plan.requires_force}")
+    for warning in plan.warnings:
+        print(f"  warning: {warning}")
+
+
+def cmd_checkpoint_rollback(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    if not args.confirm:
+        print(
+            "error: rollback requires --confirm (it runs git reset --hard and discards uncommitted changes)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    try:
+        result = checkpoints.rollback_checkpoint(db_path, args.checkpoint_id, confirm=True, force=args.force)
+    except checkpoints.CheckpointError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _checkpoint_exit(exc.kind)
+    if result.restored:
+        print(
+            f"Checkpoint #{result.checkpoint_id} rolled back: {result.message}. "
+            f"HEAD is now {result.git_head_after}."
+        )
+        return EXIT_OK
+    print(f"error: rollback failed: {result.error}", file=sys.stderr)
+    return EXIT_RUN_FAILED
+
+
+def _dispatch_checkpoint(args: argparse.Namespace) -> int:
+    handlers = {
+        "list": cmd_checkpoint_list,
+        "show": cmd_checkpoint_show,
+        "rollback-plan": cmd_checkpoint_rollback_plan,
+        "rollback": cmd_checkpoint_rollback,
+    }
+    handler = handlers.get(getattr(args, "checkpoint_command", None))
+    if handler is None:
+        print("error: checkpoint requires a subcommand: list, show, rollback-plan, rollback", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
+
+
 # -- export / import commands ------------------------------------------------
 
 
@@ -2054,6 +2200,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_provider(args)
     if args.command == "recovery":
         return _dispatch_recovery(args)
+    if args.command == "checkpoint":
+        return _dispatch_checkpoint(args)
     if args.command == "export":
         return _dispatch_export(args)
     if args.command == "import":

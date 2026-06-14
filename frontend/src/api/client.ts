@@ -26,6 +26,9 @@ import type {
   RecoveryAttempt,
   RecoveryListResponse,
   ReconciliationReport,
+  RollbackPlan,
+  RollbackResult,
+  RunCheckpoint,
   RunComparisonResponse,
   RunLock,
   SearchAllResponse,
@@ -265,6 +268,14 @@ export const api = {
       body: JSON.stringify({ dry_run: dryRun }),
     }),
   listWorkers: () => request<WorkerHeartbeat[]>("/system/workers"),
+  listCheckpoints: (runId: number) => request<RunCheckpoint[]>(`/checkpoints/runs/${runId}`),
+  getCheckpoint: (id: number) => request<RunCheckpoint>(`/checkpoints/${id}`),
+  getRollbackPlan: (id: number) => request<RollbackPlan>(`/checkpoints/${id}/rollback-plan`),
+  rollbackCheckpoint: (id: number, confirm: boolean, force: boolean) =>
+    request<RollbackResult>(`/checkpoints/${id}/rollback`, {
+      method: "POST",
+      body: JSON.stringify({ confirm, force }),
+    }),
 };
 
 // Build the SSE live-stream URL for a run. The API token (when stored) is appended as a

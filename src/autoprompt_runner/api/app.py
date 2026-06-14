@@ -18,6 +18,7 @@ from .. import __version__
 from .dependencies import require_api_auth, require_health_auth
 from .routes import (
     chains,
+    checkpoints,
     compare,
     events,
     export_import,
@@ -64,6 +65,7 @@ app.include_router(compare.router, dependencies=_protected)
 app.include_router(chains.router, dependencies=_protected)
 app.include_router(providers.router, dependencies=_protected)
 app.include_router(recovery.router, dependencies=_protected)
+app.include_router(checkpoints.router, dependencies=_protected)
 app.include_router(export_import.router, dependencies=_protected)
 # The events router carries its own auth dependencies per-route (the SSE stream accepts a
 # token via header OR query), so it is NOT wrapped with the header-only _protected dependency.

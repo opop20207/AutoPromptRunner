@@ -16,7 +16,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import events, locks, providers, queue, storage  # noqa: E402
+from autoprompt_runner import checkpoints, events, locks, providers, queue, storage  # noqa: E402
 from autoprompt_runner.approvals import ApprovalStatus  # noqa: E402
 from autoprompt_runner.models import AgentResult, NextPrompt  # noqa: E402
 from autoprompt_runner.runners import ClaudeCodeRunner  # noqa: E402
@@ -254,6 +254,20 @@ class GitArtifactCaptureTests(unittest.TestCase):
         report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False, workspace=plain)
         self.assertEqual(report.run_status, RunStatus.DONE.value)
         self.assertIn("git_skipped", self._types(report.run_id))
+
+    def test_creates_checkpoint_before_execution_for_git_workspace(self):
+        repo = self._init_git_repo()
+        report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False, workspace=repo)
+        cps = storage.list_checkpoints_for_run(self.db, report.run_id)
+        self.assertGreaterEqual(len(cps), 1)
+        self.assertEqual(cps[0].status, storage.CHECKPOINT_CREATED)
+        self.assertEqual(checkpoints.get_latest_checkpoint(self.db, report.run_id).run_id, report.run_id)
+
+    def test_no_checkpoint_recorded_for_non_git_workspace(self):
+        plain = os.path.join(self._tmp.name, "plain2")
+        os.makedirs(plain)
+        report = RunService(self.db).start("p", "mock", max_loops=1, require_approval=False, workspace=plain)
+        self.assertEqual(storage.list_checkpoints_for_run(self.db, report.run_id), [])
 
 
 class PromptContextTests(unittest.TestCase):

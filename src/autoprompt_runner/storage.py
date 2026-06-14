@@ -23,6 +23,7 @@ from .models import (
     QueueJob,
     RecoveryAttempt,
     RunCancellation,
+    RunCheckpoint,
     RunLock,
     StoredRun,
     StoredStep,
@@ -62,6 +63,12 @@ CANCELLATION_FAILED = "FAILED"
 # Worker heartbeat statuses (see autoprompt_runner.reconcile / worker).
 WORKER_ACTIVE = "ACTIVE"
 WORKER_STOPPED = "STOPPED"
+
+# Run-checkpoint statuses (mirrored as constants in autoprompt_runner.checkpoints).
+CHECKPOINT_CREATED = "CREATED"
+CHECKPOINT_RESTORED = "RESTORED"
+CHECKPOINT_FAILED = "FAILED"
+CHECKPOINT_SKIPPED = "SKIPPED"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -262,6 +269,25 @@ CREATE TABLE IF NOT EXISTS worker_heartbeats (
 );
 
 CREATE INDEX IF NOT EXISTS idx_worker_heartbeats_status ON worker_heartbeats (status, updated_at);
+
+CREATE TABLE IF NOT EXISTS run_checkpoints (
+    id INTEGER PRIMARY KEY,
+    run_id INTEGER NOT NULL,
+    step_id INTEGER,
+    workspace_path TEXT NOT NULL,
+    git_head_before TEXT,
+    git_branch_before TEXT,
+    git_status_before TEXT,
+    checkpoint_ref TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    restored_at TEXT,
+    restore_error TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs (id),
+    FOREIGN KEY (step_id) REFERENCES steps (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_checkpoints_run ON run_checkpoints (run_id, id);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1699,6 +1725,116 @@ def list_recoveries(db_path: str, limit: int = 50) -> List[RecoveryAttempt]:
         conn.close()
 
 
+# -- run checkpoints ---------------------------------------------------------
+
+
+def create_checkpoint_record(
+    db_path: str,
+    run_id: int,
+    workspace_path: str,
+    step_id: Optional[int] = None,
+    git_head_before: Optional[str] = None,
+    git_branch_before: Optional[str] = None,
+    git_status_before: Optional[str] = None,
+    checkpoint_ref: Optional[str] = None,
+    status: str = CHECKPOINT_CREATED,
+    restore_error: Optional[str] = None,
+) -> int:
+    """Insert a run-checkpoint row and return its id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        cur = conn.execute(
+            "INSERT INTO run_checkpoints "
+            "(run_id, step_id, workspace_path, git_head_before, git_branch_before, git_status_before, "
+            "checkpoint_ref, status, created_at, restored_at, restore_error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id, step_id, workspace_path, git_head_before, git_branch_before, git_status_before,
+                checkpoint_ref, status, _utcnow_iso(), None, restore_error,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def get_checkpoint_by_id(db_path: str, checkpoint_id: int) -> Optional[RunCheckpoint]:
+    """Return the checkpoint with ``checkpoint_id`` or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute("SELECT * FROM run_checkpoints WHERE id = ?", (checkpoint_id,)).fetchone()
+        return _row_to_checkpoint(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_latest_checkpoint_for_run(db_path: str, run_id: int) -> Optional[RunCheckpoint]:
+    """Return the most recent checkpoint for ``run_id`` (highest id), or ``None``."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        row = conn.execute(
+            "SELECT * FROM run_checkpoints WHERE run_id = ? ORDER BY id DESC LIMIT 1", (run_id,)
+        ).fetchone()
+        return _row_to_checkpoint(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_checkpoints_for_run(db_path: str, run_id: int) -> List[RunCheckpoint]:
+    """Return all checkpoints for ``run_id`` ordered by id (ascending)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM run_checkpoints WHERE run_id = ? ORDER BY id ASC", (run_id,)
+        ).fetchall()
+        return [_row_to_checkpoint(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def update_checkpoint_status(
+    db_path: str,
+    checkpoint_id: int,
+    status: str,
+    restored_at=_UNSET,
+    restore_error=_UNSET,
+) -> None:
+    """Update a checkpoint's status (and optionally restored_at / restore_error)."""
+    sets = ["status = ?"]
+    params: List = [status]
+    if restored_at is not _UNSET:
+        sets.append("restored_at = ?")
+        params.append(restored_at)
+    if restore_error is not _UNSET:
+        sets.append("restore_error = ?")
+        params.append(restore_error)
+    params.append(checkpoint_id)
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(f"UPDATE run_checkpoints SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_checkpoint_restored(db_path: str, checkpoint_id: int) -> None:
+    """Mark a checkpoint RESTORED with restored_at = now and clear any prior error."""
+    update_checkpoint_status(
+        db_path, checkpoint_id, CHECKPOINT_RESTORED, restored_at=_utcnow_iso(), restore_error=None
+    )
+
+
+def mark_checkpoint_failed(db_path: str, checkpoint_id: int, error: Optional[str] = None) -> None:
+    """Mark a checkpoint FAILED, recording ``error`` in restore_error."""
+    update_checkpoint_status(db_path, checkpoint_id, CHECKPOINT_FAILED, restore_error=error)
+
+
 # -- export / import ---------------------------------------------------------
 
 # Tables that may be exported/imported (whitelisted so a table name is never interpolated
@@ -2440,4 +2576,21 @@ def _row_to_recovery_attempt(row: sqlite3.Row) -> RecoveryAttempt:
         created_at=row["created_at"],
         decided_at=_opt(row, "decided_at"),
         executed_at=_opt(row, "executed_at"),
+    )
+
+
+def _row_to_checkpoint(row: sqlite3.Row) -> RunCheckpoint:
+    return RunCheckpoint(
+        id=row["id"],
+        run_id=row["run_id"],
+        step_id=_opt(row, "step_id"),
+        workspace_path=row["workspace_path"],
+        git_head_before=_opt(row, "git_head_before"),
+        git_branch_before=_opt(row, "git_branch_before"),
+        git_status_before=_opt(row, "git_status_before"),
+        checkpoint_ref=_opt(row, "checkpoint_ref"),
+        status=row["status"],
+        created_at=row["created_at"],
+        restored_at=_opt(row, "restored_at"),
+        restore_error=_opt(row, "restore_error"),
     )

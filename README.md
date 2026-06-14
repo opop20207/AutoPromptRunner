@@ -751,6 +751,83 @@ python -m autoprompt_runner.cli show-artifact --id 1
 `show-artifact` exits non-zero with a clean error if the artifact id does not exist.
 `show-run` also prints each step's changed files and diff-stat summary when available.
 
+## Run checkpoints and rollback
+
+AutoPromptRunner drives coding agents against **real workspaces**, so before a step executes it
+records a **checkpoint**: the read-only Git state of the workspace. If an agent's changes go
+wrong, you can inspect the checkpoint and **roll the workspace back** -- explicitly, never
+automatically.
+
+**What is captured** (read-only, before each runner execution, when the workspace is a Git
+repo): the current HEAD commit (`git_head_before`), the current branch (`git_branch_before`),
+and the porcelain status (`git_status_before`). The captured HEAD is also the `checkpoint_ref`
+a rollback would reset to. A checkpoint row carries a `status` of `CREATED` / `RESTORED` /
+`FAILED` / `SKIPPED` and timestamps.
+
+**What is *not* captured / done.** Checkpointing creates **no commit, tag, or stash** and does
+**not** copy file contents -- it is Git metadata only (the captured commit is the restore
+point). It never stashes or discards your uncommitted changes when capturing. It is **Git
+only**: there is no filesystem snapshot and no cloud backup. A missing or non-Git workspace is
+recorded as `SKIPPED` (with a reason) and **never fails the run**. If the workspace already had
+uncommitted changes before the run, the checkpoint is still `CREATED` but flagged dirty (those
+pre-existing changes make a later rollback riskier).
+
+**Rollback is explicit and safe.** Two modes are supported:
+
+1. *plan / metadata-only check* -- shows what a rollback would do and **changes nothing**.
+2. *safe reset* -- runs `git reset --hard <git_head_before>`, but only when you explicitly
+   confirm. Before the reset it records a `safety_warning` artifact, and it **refuses** when the
+   workspace had uncommitted changes that were not created by the run (or is held by an active
+   run lock) unless you also pass `--force`. Rollback is **never run automatically**.
+
+A *revert-patch* mode (reverting only the run's own changes) is **future work** -- not
+implemented.
+
+**CLI:**
+
+```
+python -m autoprompt_runner.cli checkpoint list --run-id 12          # checkpoints for a run
+python -m autoprompt_runner.cli checkpoint show --id 3               # detail + rollback plan
+python -m autoprompt_runner.cli checkpoint rollback-plan --id 3      # what rollback would do (read-only)
+python -m autoprompt_runner.cli checkpoint rollback --id 3 --confirm # roll back (git reset --hard)
+python -m autoprompt_runner.cli checkpoint rollback --id 3 --confirm --force  # override an unsafe state
+```
+
+`rollback` refuses without `--confirm`, and refuses an unsafe (dirty / locked) workspace without
+`--force`; on success the checkpoint is marked `RESTORED`.
+
+**API.** `GET /checkpoints/runs/{run_id}` lists a run's checkpoints, `GET /checkpoints/{id}`
+returns one, `GET /checkpoints/{id}/rollback-plan` returns the read-only plan, and
+`POST /checkpoints/{id}/rollback` performs the rollback. Rollback requires `{"confirm": true}`
+(**400** otherwise), returns **409** when it is unsafe without `"force": true`, and **404** when
+the checkpoint is missing.
+
+```
+curl http://127.0.0.1:8000/checkpoints/runs/12
+curl http://127.0.0.1:8000/checkpoints/3/rollback-plan
+curl -X POST http://127.0.0.1:8000/checkpoints/3/rollback \
+  -H "Content-Type: application/json" -d '{"confirm":true,"force":false}'
+```
+
+In the **web UI**, the run detail has a *Checkpoints & rollback* panel near the Safety and
+Artifacts sections: it shows the latest checkpoint prominently, a dirty-state warning, the
+rollback plan, and a *Roll back* button that asks for confirmation (with a separate **Force**
+checkbox to override an unsafe state) and clearly warns that *"Rollback may discard workspace
+changes."* The run detail reloads after a rollback. The *New Run* form notes that Git
+checkpoints are captured automatically -- no configuration is needed.
+
+**Limitations.**
+
+- **Git workspaces only** -- a non-Git or missing workspace is skipped (the run still proceeds).
+- **No cloud backup** and no filesystem snapshot -- only the Git commit/branch/status metadata
+  is stored.
+- **No automatic rollback** -- it always requires explicit confirmation.
+- **Uncommitted pre-run changes make rollback riskier** -- `git reset --hard` discards current
+  uncommitted changes, so a workspace that was already dirty before the run needs `--force`.
+- Rollback uses `git reset --hard` (the only mutating Git command the tool runs, and only on the
+  explicit rollback path); it never runs `git clean`, never deletes files, and never
+  pushes/pulls/merges/rebases. Untracked files are left in place by `reset --hard`.
+
 ## Search
 
 As run history grows it gets hard to find a previous run, the log of an error, a
@@ -1326,6 +1403,15 @@ curl -X POST http://127.0.0.1:8000/system/reconcile -H "Content-Type: applicatio
 curl http://127.0.0.1:8000/system/workers
 ```
 
+Checkpoints / rollback (see *Run checkpoints and rollback* above):
+
+```
+curl http://127.0.0.1:8000/checkpoints/runs/12
+curl http://127.0.0.1:8000/checkpoints/3/rollback-plan
+curl -X POST http://127.0.0.1:8000/checkpoints/3/rollback \
+  -H "Content-Type: application/json" -d '{"confirm":true,"force":false}'
+```
+
 Interactive docs are served at `/docs` (Swagger UI) and `/redoc`. Errors use standard
 HTTP status codes (400 invalid request, 404 missing project/run/artifact, 409 invalid
 run state) and never leak stack traces or secrets. A frontend is not implemented yet.
@@ -1507,6 +1593,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Git worktrees and workspace locks
 - [x] Local queue + background worker, and run cancellation
 - [x] Crash recovery: worker heartbeat + stale-state reconciliation (CLI / API / web UI)
+- [x] Run checkpoints + explicit Git rollback (CLI / API / web UI)
 - [x] Search across runs, logs, prompts, and artifacts (CLI / API / web UI)
 - [x] Compare two runs (CLI / API / web UI)
 - [x] Prompt chain history view (CLI / API / web UI)

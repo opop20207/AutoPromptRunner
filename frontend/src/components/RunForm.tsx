@@ -242,6 +242,11 @@ export function RunForm({
           Workspace override (highest precedence; required for claude-code / codex unless from a project)
           <input value={workspace} onChange={(e) => setWorkspace(e.target.value)} />
         </label>
+        <p className="muted">
+          A Git checkpoint of the workspace HEAD is captured automatically before execution when the
+          workspace is a Git repository — no setup needed. You can review it and roll back from the run
+          detail.
+        </p>
         <label>
           Max loops (blank uses project/default; hard limit {MAX_LOOPS_HARD_LIMIT})
           <input

@@ -469,3 +469,55 @@ class ReconciliationReportResponse(BaseModel):
     orphaned_cancellations: int
     stale_workers: int
     actions: List[ReconciliationActionResponse] = []
+
+
+class CheckpointResponse(BaseModel):
+    id: int
+    run_id: int
+    step_id: Optional[int] = None
+    workspace_path: str
+    git_head_before: Optional[str] = None
+    git_branch_before: Optional[str] = None
+    git_status_before: Optional[str] = None
+    checkpoint_ref: Optional[str] = None
+    status: str
+    created_at: str
+    restored_at: Optional[str] = None
+    restore_error: Optional[str] = None
+
+
+class RollbackPlanResponse(BaseModel):
+    checkpoint_id: int
+    run_id: int
+    workspace_path: str
+    status: str
+    mode: str
+    target_head: Optional[str] = None
+    target_branch: Optional[str] = None
+    current_head: Optional[str] = None
+    current_branch: Optional[str] = None
+    is_git_repo: bool
+    preexisting_dirty: bool
+    current_dirty: bool
+    workspace_locked: bool
+    can_rollback: bool
+    requires_force: bool
+    safe: bool
+    summary: str
+    warnings: List[str] = []
+
+
+class RollbackRequest(BaseModel):
+    confirm: bool = False
+    force: bool = False
+
+
+class RollbackResultResponse(BaseModel):
+    checkpoint_id: int
+    run_id: int
+    status: str
+    restored: bool
+    target_head: Optional[str] = None
+    git_head_after: Optional[str] = None
+    message: str
+    error: Optional[str] = None
