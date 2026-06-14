@@ -32,6 +32,10 @@ dev = ["pytest>=7.0", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.29"]
 [project.scripts]
 autoprompt-runner = "autoprompt_runner.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/opop20207/AutoPromptRunner"
+Repository = "https://github.com/opop20207/AutoPromptRunner"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

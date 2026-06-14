@@ -986,5 +986,19 @@ class ExportImportCliTests(_DbTestCase):
         self.assertNotEqual(code, 0)
 
 
+class EntryPointTests(unittest.TestCase):
+    def test_main_is_callable(self):
+        self.assertTrue(callable(main))
+
+    def test_help_exits_zero(self):
+        with self.assertRaises(SystemExit) as ctx:
+            main(["--help"])
+        self.assertEqual(ctx.exception.code, 0)
+
+    def test_no_command_prints_usage(self):
+        code, out, err = run_cli([])
+        self.assertEqual(code, 2)  # EXIT_USAGE
+
+
 if __name__ == "__main__":
     unittest.main()

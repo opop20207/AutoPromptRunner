@@ -47,28 +47,62 @@ above (or scroll) for the full feature tour; each capability has its own section
 
 ## Install and setup
 
+**One-command local setup** (creates a `.venv`, installs the backend in editable mode,
+installs the frontend dependencies, writes `.autoprompt/config.toml`, and seeds the built-in
+templates and provider profiles -- it never overwrites an existing config unless you pass
+`--force`, and never requires Claude Code or Codex):
+
 ```
 git clone https://github.com/opop20207/AutoPromptRunner.git
 cd AutoPromptRunner
-pip install -e ".[dev]"          # CLI + FastAPI backend + test client
+scripts/setup_local.sh            # or: scripts/setup_local.sh --force (overwrite config)
+```
+
+**Manual install** -- backend and frontend separately:
+
+```
+pip install -e ".[dev]"           # CLI + FastAPI backend + test client (scripts/install_backend.sh)
+( cd frontend && npm install )    # web UI dependencies              (scripts/install_frontend.sh)
 ```
 
 The CLI core needs no third-party packages; the `[dev]` (or `[api]`) extra adds FastAPI for
-the HTTP backend. Then:
+the HTTP backend. The console entry point `autoprompt-runner` is installed by pip (equivalent
+to `python -m autoprompt_runner.cli`). A first run:
 
 ```
 python -m autoprompt_runner.cli init-db                 # create the local SQLite database
 python -m autoprompt_runner.cli config init             # optional: write .autoprompt/config.toml
 python -m autoprompt_runner.cli template seed           # add the built-in prompt templates
+python -m autoprompt_runner.cli provider seed           # add the default provider profiles
 python -m autoprompt_runner.cli project add --name demo --repo-path . --provider mock
 python -m autoprompt_runner.cli run --project demo --prompt "Review this project" --max-loops 3
 python -m autoprompt_runner.cli approve-next --run-id 1 # or: reject-next --run-id 1
 ```
 
-Convenience dev scripts (bash) live in [`scripts/`](scripts): `dev_api.sh` (start the API),
-`dev_worker.sh` (start the worker), `dev_frontend.sh` (start the Vite dev server), and
-`check_all.sh` (run backend tests, config validation, and the frontend build -- safe
-commands only; it never invokes Claude Code, Codex, or any external AI tool).
+### Scripts
+
+All helper scripts are bash, use `set -euo pipefail` (where practical), resolve the project
+root safely, run no destructive commands, and never invoke Claude Code, Codex, or any
+external AI tool. They live in [`scripts/`](scripts):
+
+| Script | What it does |
+| --- | --- |
+| `setup_local.sh` | One-command setup (venv + backend + frontend + config + seed). `--force` overwrites config. |
+| `install_backend.sh` | `pip install -e ".[dev]"`, then print the CLI version. |
+| `install_frontend.sh` | `npm install` inside `frontend/` (no global packages). |
+| `build_frontend.sh` | Build the frontend (`tsc` + `vite build`); fails cleanly on TS/build errors. |
+| `dev_api.sh` | Start the FastAPI dev server (`AUTOPROMPT_API_HOST`/`AUTOPROMPT_API_PORT`, default `127.0.0.1:8000`). |
+| `dev_worker.sh` | Start the local queue worker (forwards flags like `--once`, `--poll-interval-seconds`). |
+| `dev_frontend.sh` | Start the Vite dev server (`http://localhost:5173`). |
+| `check_all.sh` | Backend tests + `config validate` + mock provider check + frontend build (safe; no external AI). |
+| `doctor.sh` | Environment diagnostics (Python, Node/npm, SQLite, CLI, config, frontend deps, optional `claude`/`codex`). |
+| `package_release.sh` | Run checks, build the frontend and (if `build` is installed) the wheel/sdist, and assemble `dist/release-v0.1`. It does **not** publish, tag, or create a GitHub release. |
+
+```
+scripts/check_all.sh        # verify the whole project before committing
+scripts/doctor.sh           # diagnose a local environment (exits non-zero only on a required failure)
+scripts/package_release.sh  # assemble a local v0.1 release under dist/release-v0.1
+```
 
 ## MVP Workflow
 
@@ -1231,7 +1265,27 @@ scripts/check_all.sh                        # tests + config validate + frontend
   separate Git worktree for parallel sessions, or release a stale lock (`locks release`).
 - **A queued run never executes** -> start a worker (`worker run`); queued runs do nothing
   until a worker claims them.
-- **Frontend cannot reach the API** -> start the backend and/or set `VITE_API_BASE_URL`.
+- **Frontend cannot reach the API** -> start the backend (`scripts/dev_api.sh`) and/or set
+  `VITE_API_BASE_URL` (e.g. `VITE_API_BASE_URL=http://127.0.0.1:9000 npm run dev`).
+
+### Setup / packaging troubleshooting
+
+- **`python` not found** -> install Python >= 3.11 and ensure it is on `PATH`; run
+  `scripts/doctor.sh` to confirm. On some systems the command is `python3`.
+- **`npm` / `node` not found** -> install Node.js (includes npm). It is only needed to
+  build or run the web UI; the CLI and API work without it. `scripts/doctor.sh` reports it
+  as a warning, not a failure.
+- **Claude Code (`claude`) not installed** -> only the `claude-code` provider needs it;
+  `mock` (and the rest of the tool) works without it. Availability is reported by
+  `provider check --name claude-code` and `scripts/doctor.sh`.
+- **Codex (`codex`) not installed** -> only the `codex` provider needs it; `mock` works
+  without it. Check with `provider check --name codex`.
+- **DB path issues** -> the database defaults to `.autoprompt/autoprompt.db` (override with
+  `--db-path` or `AUTOPROMPT_DB_PATH` / `[storage] db_path`); the parent directory is created
+  automatically. Use `python -m autoprompt_runner.cli config show` to see the effective path.
+- **`python -m build` missing in `package_release.sh`** -> install it with
+  `python -m pip install build`; the script prints this instruction and still assembles the
+  frontend bundle.
 
 ## v0.1 checklist
 
@@ -1251,6 +1305,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Export / import of data (CLI / API / web UI)
 - [x] Config file / environment overrides (`config show` / `validate` / `init`)
 - [x] FastAPI backend and the React/Vite frontend build
+- [x] Local install / packaging scripts (`setup_local` / `check_all` / `doctor` / `package_release`)
 - [x] End-to-end CLI and API flow tests pass
 
 ## Project Documents

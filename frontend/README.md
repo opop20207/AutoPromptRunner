@@ -19,7 +19,28 @@ environment variable.
 
 ```
 npm run build    # tsc (type-check) + vite build -> dist/
+npm run preview  # serve the production build locally
 ```
+
+From the repo root you can also use the helper scripts:
+`scripts/install_frontend.sh` (npm install), `scripts/dev_frontend.sh` (dev server),
+and `scripts/build_frontend.sh` (production build).
+
+## Configuration
+
+The UI calls the backend at `http://localhost:8000` by default. Override it with the
+`VITE_API_BASE_URL` environment variable at dev/build time, for example:
+
+```
+VITE_API_BASE_URL=http://127.0.0.1:9000 npm run dev
+```
+
+## Known limitations
+
+- No authentication — intended for local, single-user use only.
+- Run logs use polling (no WebSocket / SSE live streaming).
+- No router or state library; navigation is simple local state.
+- Requires the backend API to be running (`scripts/dev_api.sh`).
 
 ## What it covers
 

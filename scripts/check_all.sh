@@ -18,6 +18,14 @@ fi
 echo "== config validate =="
 python -m autoprompt_runner.cli config validate
 
+echo "== provider check (mock only) =="
+# Use a throwaway database so this never touches the user's local state. Only the offline
+# mock provider is checked -- Claude Code / Codex are never required or invoked.
+CHECK_DB="$(mktemp -t autoprompt_check_XXXXXX.db)"
+python -m autoprompt_runner.cli provider seed --db-path "$CHECK_DB" >/dev/null
+python -m autoprompt_runner.cli provider check --name mock --db-path "$CHECK_DB"
+rm -f "$CHECK_DB"
+
 echo "== frontend build =="
 if [ -d frontend/node_modules ]; then
   ( cd frontend && npm run build )
