@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
 import type { RunDetail as RunDetailData } from "../types";
+import { RECONCILIATION_ARTIFACT_TYPES } from "../types";
 import { ApprovalPanel } from "./ApprovalPanel";
 import { ArtifactList } from "./ArtifactList";
 import { ArtifactViewer } from "./ArtifactViewer";
@@ -142,6 +143,32 @@ export function RunDetail({
             onChanged={onChanged}
             onOpenRun={onOpenRun ?? (() => {})}
           />
+
+          {/* 4c. Stale-state reconciliation (only when this run was touched by recovery) */}
+          {(() => {
+            const reconArtifacts = detail.artifacts.filter((a) =>
+              (RECONCILIATION_ARTIFACT_TYPES as readonly string[]).includes(a.type),
+            );
+            if (reconArtifacts.length === 0) return null;
+            return (
+              <div className="subsection">
+                <h3>Recovery / reconciliation</h3>
+                <div className="warning-box">
+                  This run was touched by stale-state reconciliation (e.g. after a worker crash, machine
+                  restart, or interrupted run). The reason is shown below.
+                </div>
+                <ul className="recon-list">
+                  {reconArtifacts.map((a) => (
+                    <li key={a.id}>
+                      <code>{a.type}</code>
+                      {a.preview ? ` — ${a.preview}` : ""}{" "}
+                      <span className="mono muted">{a.created_at}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
 
           {/* 5. Steps */}
           <div className="subsection">

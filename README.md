@@ -606,6 +606,79 @@ yet).
 3. start the worker: `python -m autoprompt_runner.cli worker run`
 4. create a **queued** run from the web UI and watch the worker execute it.
 
+## Crash recovery and stale-state reconciliation
+
+If the API or worker crashes, the machine restarts, or a run is interrupted, the database can
+be left with **stale state**: a run stuck in `RUNNING` whose process is gone, a `RUNNING`
+queue job orphaned by a dead worker, an `ACTIVE` workspace lock past its expiry, or a
+`REQUESTED` cancellation for a run that already finished. Reconciliation detects and repairs
+this safely. It is **local-first and non-destructive**: it only flips database rows and
+records reconciliation artifacts/events -- it **never deletes files and never runs a Git
+command**, and it does not assume any distributed process control.
+
+**Worker heartbeat.** While `worker run` polls, it records a heartbeat row
+(`worker_heartbeats`: `worker_id`, `status` of `ACTIVE` / `STOPPED`, `started_at`,
+`updated_at`, `stopped_at`), refreshes it each poll, and marks it `STOPPED` on a clean exit.
+A heartbeat whose `updated_at` is older than the staleness window (60s) -- or that is still
+`ACTIVE` after a crash -- is treated as a dead worker. This is a **single-machine liveness
+signal**, not distributed coordination.
+
+**What is detected** (a run's / job's "age" is measured against its own `timeout_seconds`
+plus a 300s grace):
+
+- **Stale runs** -- `RUNNING` older than timeout + grace -> marked `FAILED` with reason
+  `worker interrupted` (or `STOPPED` if a cancellation was already requested). Its workspace
+  lock is released. `WAITING_APPROVAL` runs are **never** stale (they are waiting on a human),
+  and `DONE` / `FAILED` / `STOPPED` runs are never modified.
+- **Stale queue jobs** -- `RUNNING` with **no live worker** and older than timeout + grace ->
+  `FAILED`. If a worker heartbeat is live, its `RUNNING` jobs are left alone. `QUEUED` jobs
+  stay queued; `CANCELLED` jobs are never executed.
+- **Stale locks** -- `ACTIVE` past `expires_at`, or held by a run that is already terminal ->
+  `EXPIRED`. Only the lock row changes; **no files are deleted and no Git command runs**.
+- **Orphaned cancellations** -- a `REQUESTED` cancellation whose run is already terminal ->
+  `COMPLETED`; whose run is missing -> recorded as a warning.
+
+Each repair records artifacts on the affected run (`stale_run_detected`,
+`stale_queue_job_failed`, `stale_lock_expired`, and a `reconciliation_report` summary) and
+emits run events (`reconciliation_started` / `reconciliation_finished`, `stale_run_failed`,
+`stale_job_failed`, `stale_lock_expired`).
+
+**Worker reconciles on start.** `worker run` reconciles stale state **before** it registers
+its own heartbeat, so a previous crashed worker's orphaned jobs are seen (not masked by the
+fresh heartbeat). This is on by default; disable it with `--no-reconcile-on-start`.
+
+**CLI:**
+
+```
+python -m autoprompt_runner.cli system status               # workers / jobs / locks / stale counts
+python -m autoprompt_runner.cli system reconcile --dry-run  # report what would change (no writes)
+python -m autoprompt_runner.cli system reconcile            # apply the repair
+python -m autoprompt_runner.cli worker run --no-reconcile-on-start   # skip reconcile-on-start
+```
+
+**API.** `GET /system/status` returns the snapshot (active/stale workers, queued/running
+jobs, active/stale locks, stale runs); `POST /system/reconcile` with `{"dry_run": true|false}`
+reports or applies the repair and returns a reconciliation report; `GET /system/workers`
+lists worker heartbeats. All three require the API token when auth is enabled.
+
+```
+curl http://127.0.0.1:8000/system/status
+curl -X POST http://127.0.0.1:8000/system/reconcile -H "Content-Type: application/json" -d '{"dry_run":true}'
+curl http://127.0.0.1:8000/system/workers
+```
+
+In the **web UI**, a *System* section shows the status snapshot, worker heartbeats, and
+*Dry-run* / *Reconcile* buttons with the resulting action list; the *Queue* panel warns when
+`RUNNING` jobs have no live worker (and links to the System panel); and a reconciled run's
+detail shows a *Recovery / reconciliation* note with the reason.
+
+**Limitations.** The heartbeat is local-only -- there is no cross-machine coordination, so do
+not point two machines at one database. Recovery of a still-running OS process is best-effort
+(the in-memory process registry does not survive a restart). Reconciliation repairs *bookkeeping*
+only: it does **not** restore uncommitted code in a workspace, resume an interrupted run, or
+re-execute lost work -- it marks the interrupted run `FAILED` so you can inspect its artifacts
+and start a fresh (or recovery) run.
+
 ## Cancelling and stopping runs
 
 A queued, running, or waiting run can be cancelled. Cancellation moves the run to
@@ -1245,6 +1318,14 @@ curl "http://127.0.0.1:8000/runs/1/artifacts?type=git_diff"
 curl http://127.0.0.1:8000/artifacts/1
 ```
 
+System / crash recovery (see *Crash recovery and stale-state reconciliation* above):
+
+```
+curl http://127.0.0.1:8000/system/status
+curl -X POST http://127.0.0.1:8000/system/reconcile -H "Content-Type: application/json" -d '{"dry_run":true}'
+curl http://127.0.0.1:8000/system/workers
+```
+
 Interactive docs are served at `/docs` (Swagger UI) and `/redoc`. Errors use standard
 HTTP status codes (400 invalid request, 404 missing project/run/artifact, 409 invalid
 run state) and never leak stack traces or secrets. A frontend is not implemented yet.
@@ -1425,6 +1506,7 @@ scripts/check_all.sh                        # tests + config validate + frontend
 - [x] Project profiles and prompt templates
 - [x] Git worktrees and workspace locks
 - [x] Local queue + background worker, and run cancellation
+- [x] Crash recovery: worker heartbeat + stale-state reconciliation (CLI / API / web UI)
 - [x] Search across runs, logs, prompts, and artifacts (CLI / API / web UI)
 - [x] Compare two runs (CLI / API / web UI)
 - [x] Prompt chain history view (CLI / API / web UI)

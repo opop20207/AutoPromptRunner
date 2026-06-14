@@ -9,6 +9,7 @@ export type SectionKey =
   | "search"
   | "compare"
   | "queue"
+  | "system"
   | "export-import"
   | "detail";
 
@@ -23,6 +24,7 @@ const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "search", label: "Search" },
   { key: "compare", label: "Compare" },
   { key: "queue", label: "Queue" },
+  { key: "system", label: "System" },
   { key: "export-import", label: "Export / Import" },
 ];
 

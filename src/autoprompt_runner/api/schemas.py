@@ -426,3 +426,46 @@ class RunEventResponse(BaseModel):
 class RunEventListResponse(BaseModel):
     events: List[RunEventResponse] = []
     latest_id: Optional[int] = None
+
+
+class WorkerHeartbeatResponse(BaseModel):
+    id: int
+    worker_id: str
+    status: str
+    started_at: str
+    updated_at: str
+    stopped_at: Optional[str] = None
+
+
+class SystemStatusResponse(BaseModel):
+    active_workers: int
+    stale_workers: int
+    queued_jobs: int
+    running_jobs: int
+    active_locks: int
+    stale_locks: int
+    stale_runs: int
+    generated_at: str
+
+
+class ReconcileRequest(BaseModel):
+    dry_run: bool = False
+
+
+class ReconciliationActionResponse(BaseModel):
+    kind: str
+    target_id: int
+    run_id: Optional[int] = None
+    action: str
+    reason: str
+
+
+class ReconciliationReportResponse(BaseModel):
+    dry_run: bool
+    generated_at: str
+    stale_runs: int
+    stale_queue_jobs: int
+    stale_locks: int
+    orphaned_cancellations: int
+    stale_workers: int
+    actions: List[ReconciliationActionResponse] = []

@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, auth, cancel, chains, compare, export_import, locks, providers, queue, recovery, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, auth, cancel, chains, compare, export_import, locks, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -102,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_recovery_commands(subparsers)
     _add_export_import_commands(subparsers)
     _add_auth_commands(subparsers)
+    _add_system_commands(subparsers)
 
     run_parser = subparsers.add_parser(
         "run", help="Start a run; pause at an approval gate by default."
@@ -350,6 +351,10 @@ def _add_worker_commands(subparsers: argparse._SubParsersAction) -> None:
         "--poll-interval-seconds", dest="poll_interval_seconds", type=float, default=None,
         help="Seconds between polls when the queue is empty (default: config queue.poll_interval_seconds).",
     )
+    run_parser.add_argument(
+        "--reconcile-on-start", dest="reconcile_on_start", action=argparse.BooleanOptionalAction, default=True,
+        help="Reconcile stale state before polling (default: on; --no-reconcile-on-start to skip).",
+    )
     _add_db_path(run_parser)
 
 
@@ -368,6 +373,18 @@ def _add_auth_commands(subparsers: argparse._SubParsersAction) -> None:
     token_parser = auth_sub.add_parser("token", help="API token helpers.")
     token_sub = token_parser.add_subparsers(dest="token_command", metavar="subcommand")
     token_sub.add_parser("generate", help="Generate and print a new secure API token (not saved).")
+
+
+def _add_system_commands(subparsers: argparse._SubParsersAction) -> None:
+    system_parser = subparsers.add_parser("system", help="Inspect and reconcile stale state (crash recovery).")
+    system_sub = system_parser.add_subparsers(dest="system_command", metavar="subcommand")
+    status_parser = system_sub.add_parser("status", help="Print workers / jobs / locks / stale-run state.")
+    _add_db_path(status_parser)
+    reconcile_parser = system_sub.add_parser("reconcile", help="Reconcile stale state (--dry-run to only report).")
+    reconcile_parser.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", help="Report only; do not modify the database."
+    )
+    _add_db_path(reconcile_parser)
 
 
 def _add_search_commands(subparsers: argparse._SubParsersAction) -> None:
@@ -1042,9 +1059,12 @@ def cmd_worker_run(args: argparse.Namespace) -> int:
         if args.poll_interval_seconds is not None
         else app_settings.queue.poll_interval_seconds
     )
-    local_worker = worker.LocalWorker(db_path, poll_interval_seconds=poll)
+    local_worker = worker.LocalWorker(
+        db_path, poll_interval_seconds=poll, reconcile_on_start=getattr(args, "reconcile_on_start", True)
+    )
     if args.once:
-        executed = local_worker.run_once()
+        # run_forever(stop_after=1) so a one-shot worker still reconciles + heartbeats.
+        executed = local_worker.run_forever(stop_after=1)
         print("worker: executed one job." if executed else "worker: no queued jobs.")
         return EXIT_OK
     print(f"worker: polling every {poll}s (Ctrl+C to stop)...")
@@ -1151,6 +1171,43 @@ def _dispatch_auth(args: argparse.Namespace) -> int:
         return cmd_auth_token_generate(args)
     print("error: auth requires a subcommand: token generate", file=sys.stderr)
     return EXIT_USAGE
+
+
+# -- system (stale-state reconciliation) -------------------------------------
+
+
+def cmd_system_status(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    status = reconcile.build_system_status(db_path)
+    print(f"Workers: {status.active_workers} active, {status.stale_workers} stale")
+    print(f"Queue:   {status.queued_jobs} queued, {status.running_jobs} running")
+    print(f"Locks:   {status.active_locks} active, {status.stale_locks} stale")
+    print(f"Runs:    {status.stale_runs} stale RUNNING")
+    return EXIT_OK
+
+
+def cmd_system_reconcile(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    report = reconcile.reconcile_stale_state(db_path, dry_run=args.dry_run)
+    label = "dry-run" if report.dry_run else "applied"
+    print(
+        f"Reconciliation ({label}): {report.stale_runs} run(s), {report.stale_queue_jobs} job(s), "
+        f"{report.stale_locks} lock(s), {report.orphaned_cancellations} cancellation(s), "
+        f"{report.stale_workers} worker(s)"
+    )
+    for action in report.actions:
+        run = f" run #{action.run_id}" if action.run_id else ""
+        print(f"  [{action.kind}] #{action.target_id}{run}: {action.action} -- {action.reason}")
+    return EXIT_OK
+
+
+def _dispatch_system(args: argparse.Namespace) -> int:
+    handlers = {"status": cmd_system_status, "reconcile": cmd_system_reconcile}
+    handler = handlers.get(getattr(args, "system_command", None))
+    if handler is None:
+        print("error: system requires a subcommand: status, reconcile", file=sys.stderr)
+        return EXIT_USAGE
+    return handler(args)
 
 
 # -- search commands ---------------------------------------------------------
@@ -1985,6 +2042,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _dispatch_config(args)
     if args.command == "auth":
         return _dispatch_auth(args)
+    if args.command == "system":
+        return _dispatch_system(args)
     if args.command == "search":
         return _dispatch_search(args)
     if args.command == "compare":

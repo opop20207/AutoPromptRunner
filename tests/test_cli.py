@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -661,6 +662,66 @@ class QueueWorkerCliTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("Cancelled", out)
         self.assertEqual(storage.get_run(self.db, run_id).status, "STOPPED")
+
+
+class SystemCliTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _stale_running_run(self):
+        """A RUNNING run backdated so it is stale under the real present."""
+        rid = storage.create_run(
+            self.db, root_prompt="x", provider="mock", max_loops=1, require_approval=False, timeout_seconds=60
+        )
+        storage.update_run_status(self.db, rid, RunStatus.RUNNING.value)
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                "UPDATE runs SET created_at = ? WHERE id = ?", ("2000-01-01T00:00:00+00:00", rid)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return rid
+
+    def test_status_clean_db(self):
+        code, out, err = run_cli(["system", "status", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Workers:", out)
+        self.assertIn("Queue:", out)
+        self.assertIn("Locks:", out)
+        self.assertIn("0 stale RUNNING", out)
+
+    def test_status_reports_stale_run(self):
+        self._stale_running_run()
+        code, out, err = run_cli(["system", "status", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("1 stale RUNNING", out)
+
+    def test_reconcile_dry_run_does_not_modify(self):
+        rid = self._stale_running_run()
+        code, out, err = run_cli(["system", "reconcile", "--dry-run", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("dry-run", out)
+        self.assertIn("1 run(s)", out)
+        self.assertEqual(storage.get_run(self.db, rid).status, RunStatus.RUNNING.value)  # unchanged
+
+    def test_reconcile_apply_marks_stale_run_failed(self):
+        rid = self._stale_running_run()
+        code, out, err = run_cli(["system", "reconcile", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("applied", out)
+        self.assertEqual(storage.get_run(self.db, rid).status, RunStatus.FAILED.value)
+
+    def test_system_requires_subcommand(self):
+        code, out, err = run_cli(["system"])
+        self.assertNotEqual(code, 0)
+        self.assertIn("subcommand", err.lower())
 
 
 class ConfigCliTests(unittest.TestCase):

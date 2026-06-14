@@ -77,6 +77,15 @@ def expire_locks(db_path: str) -> int:
     return storage.expire_old_locks(db_path, datetime.now(timezone.utc).isoformat())
 
 
+def expire_stale_locks(db_path: str, now_iso: Optional[str] = None) -> int:
+    """Expire ACTIVE locks past ``expires_at`` as of ``now_iso`` (defaults to now).
+
+    Used by reconciliation; the explicit time keeps it deterministic in tests. This never
+    deletes files or runs any Git command -- it only flips lock rows to EXPIRED.
+    """
+    return storage.expire_old_locks(db_path, now_iso or datetime.now(timezone.utc).isoformat())
+
+
 def acquire_lock(
     db_path: str,
     workspace: Optional[str],

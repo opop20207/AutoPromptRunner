@@ -1,22 +1,26 @@
 import { useEffect, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
-import type { QueueJob } from "../types";
+import type { QueueJob, SystemStatus } from "../types";
 import { StatusBadge } from "./StatusBadge";
 
 // Shows the local run queue (queued / running / done / failed / cancelled jobs). QUEUED or
 // RUNNING jobs can be cancelled (running cancellation is best-effort). When `runId` is
-// given, the current run's row is highlighted.
+// given, the current run's row is highlighted. A system-status probe surfaces a warning when
+// RUNNING jobs look orphaned (no live worker), suggesting reconciliation in the System panel.
 export function QueuePanel({
   runId,
   refreshKey,
   onChanged,
+  onOpenSystem,
 }: {
   runId?: number;
   refreshKey?: number;
   onChanged?: () => void;
+  onOpenSystem?: () => void;
 }) {
   const [jobs, setJobs] = useState<QueueJob[]>([]);
+  const [status, setStatus] = useState<SystemStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -25,7 +29,12 @@ export function QueuePanel({
     setLoading(true);
     setError(null);
     try {
-      setJobs(await api.listQueue());
+      const [queueJobs, sys] = await Promise.all([
+        api.listQueue(),
+        api.getSystemStatus().catch(() => null), // status is advisory; never block the queue view
+      ]);
+      setJobs(queueJobs);
+      setStatus(sys);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -53,6 +62,8 @@ export function QueuePanel({
   }
 
   const hasRunning = jobs.some((job) => job.status === "RUNNING");
+  // A RUNNING job with no live worker is likely orphaned by a crashed/stopped worker.
+  const orphanedRunning = hasRunning && status != null && status.active_workers === 0;
 
   return (
     <div>
@@ -63,6 +74,18 @@ export function QueuePanel({
       </div>
       {error && <p className="error">{error}</p>}
       {loading && jobs.length === 0 && <p className="muted">Loading…</p>}
+      {orphanedRunning && (
+        <div className="warning-box">
+          RUNNING queue job(s) but no live worker — they may be stale (worker interrupted).{" "}
+          {onOpenSystem ? (
+            <button className="link-btn" onClick={onOpenSystem}>
+              Reconcile in the System panel
+            </button>
+          ) : (
+            "Reconcile from the System panel."
+          )}
+        </div>
+      )}
       {hasRunning && (
         <p className="muted">
           Cancelling a RUNNING job is best-effort — the worker process is force-stopped only if it is local.

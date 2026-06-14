@@ -67,6 +67,11 @@ def fail_job(db_path: str, job_id: int, error: object) -> None:
     storage.mark_job_failed(db_path, job_id, str(error))
 
 
+def fail_stale_job(db_path: str, job_id: int, reason: str = "stale RUNNING job (worker interrupted)") -> None:
+    """Mark a stale RUNNING job FAILED during reconciliation (a crashed worker left it RUNNING)."""
+    storage.mark_job_failed(db_path, job_id, reason)
+
+
 def cancel(db_path: str, run_id: int) -> str:
     """Cancel a run's queued job. Returns one of the ``CANCEL_*`` outcome constants.
 

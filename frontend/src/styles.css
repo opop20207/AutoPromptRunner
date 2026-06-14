@@ -7,6 +7,9 @@
   --accent: #2f6fde;
   --ok: #1c8a4a;
   --error: #c0392b;
+  --warn: #9a6700;
+  --warn-bg: #fff8e6;
+  --warn-border: #e9cf86;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -227,6 +230,38 @@ pre.block {
 
 .muted {
   color: var(--muted);
+}
+
+/* Stale-state / reconciliation warning callout (System panel, Queue panel, Run detail). */
+.warning-box {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  color: var(--warn);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.warning-box strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.warning-box ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.recon-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.recon-list code {
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 .kv {

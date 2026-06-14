@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .. import artifacts, cancel, config, events, locks, processes, safety, storage, templates, worktrees
+from .. import artifacts, cancel, config, events, locks, processes, reconcile, safety, storage, templates, worktrees
 from .. import providers as provider_mgmt
 from ..artifacts import ArtifactPayload, ArtifactType
 from ..models import AgentResult, PromptGenerationContext, StepExecutionReport
@@ -450,6 +450,15 @@ class RunService:
             prompt, provider, max_loops, require_approval=require_approval,
             workspace=workspace, timeout_seconds=timeout_seconds,
         )
+
+    def reconcile_stale_state(self, dry_run: bool = False) -> "reconcile.ReconciliationReport":
+        """Detect and (unless ``dry_run``) fix stale runs / jobs / locks / cancellations.
+
+        Delegates to :mod:`autoprompt_runner.reconcile`; non-destructive (only DB rows change,
+        no files deleted, no Git commands). Used by ``worker run --reconcile-on-start`` and the
+        ``system reconcile`` CLI/API.
+        """
+        return reconcile.reconcile_stale_state(self.db_path, dry_run=dry_run)
 
     def approve_and_continue(self, run_id: int) -> StepExecutionReport:
         """Approve the pending approval and execute the approved next prompt."""

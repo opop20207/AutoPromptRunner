@@ -223,6 +223,25 @@ class RecoveryAttempt:
 
 
 @dataclass
+class WorkerHeartbeat:
+    """A local worker's heartbeat row, persisted in ``worker_heartbeats``.
+
+    The background worker records a heartbeat on start and refreshes ``updated_at`` each poll
+    cycle; on a clean shutdown it sets ``status`` to ``STOPPED`` with ``stopped_at``. A
+    crashed worker leaves a stale ``ACTIVE`` heartbeat (an old ``updated_at``), which lets the
+    reconciler tell a live worker from a dead one. This is a single-machine signal -- there is
+    no distributed worker coordination.
+    """
+
+    id: int
+    worker_id: str
+    status: str
+    started_at: str
+    updated_at: str
+    stopped_at: Optional[str] = None
+
+
+@dataclass
 class StoredRun:
     """A run row as persisted in the ``runs`` table.
 

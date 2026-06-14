@@ -27,6 +27,7 @@ from .routes import (
     recovery,
     runs,
     search,
+    system,
     templates,
     worktrees,
 )
@@ -67,3 +68,4 @@ app.include_router(export_import.router, dependencies=_protected)
 # The events router carries its own auth dependencies per-route (the SSE stream accepts a
 # token via header OR query), so it is NOT wrapped with the header-only _protected dependency.
 app.include_router(events.router)
+app.include_router(system.router, dependencies=_protected)

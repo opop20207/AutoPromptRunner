@@ -24,6 +24,10 @@ export const ARTIFACT_TYPES = [
   "changed_files",
   "runner_stdout",
   "runner_stderr",
+  "reconciliation_report",
+  "stale_run_detected",
+  "stale_lock_expired",
+  "stale_queue_job_failed",
 ] as const;
 export type ArtifactTypeFilter = (typeof ARTIFACT_TYPES)[number];
 
@@ -411,7 +415,12 @@ export type RunEventType =
   | "safety_warning"
   | "lock_acquired"
   | "lock_released"
-  | "worker_message";
+  | "worker_message"
+  | "reconciliation_started"
+  | "reconciliation_finished"
+  | "stale_run_failed"
+  | "stale_lock_expired"
+  | "stale_job_failed";
 
 export interface RunEvent {
   id: number;
@@ -497,3 +506,54 @@ export interface RunDetail {
   cancellation_status?: string | null;
   cancellation_reason?: string | null;
 }
+
+// -- system / crash recovery (mirrors autoprompt_runner.reconcile) --
+
+export type WorkerStatus = "ACTIVE" | "STOPPED";
+
+export interface WorkerHeartbeat {
+  id: number;
+  worker_id: string;
+  status: string;
+  started_at: string;
+  updated_at: string;
+  stopped_at?: string | null;
+}
+
+export interface SystemStatus {
+  active_workers: number;
+  stale_workers: number;
+  queued_jobs: number;
+  running_jobs: number;
+  active_locks: number;
+  stale_locks: number;
+  stale_runs: number;
+  generated_at: string;
+}
+
+export interface ReconciliationAction {
+  kind: string; // "run" | "queue_job" | "lock" | "cancellation" | "worker"
+  target_id: number;
+  run_id?: number | null;
+  action: string;
+  reason: string;
+}
+
+export interface ReconciliationReport {
+  dry_run: boolean;
+  generated_at: string;
+  stale_runs: number;
+  stale_queue_jobs: number;
+  stale_locks: number;
+  orphaned_cancellations: number;
+  stale_workers: number;
+  actions: ReconciliationAction[];
+}
+
+// Reconciliation artifact types (mirrors reconcile.ARTIFACT_*), used to highlight them in RunDetail.
+export const RECONCILIATION_ARTIFACT_TYPES = [
+  "reconciliation_report",
+  "stale_run_detected",
+  "stale_lock_expired",
+  "stale_queue_job_failed",
+] as const;

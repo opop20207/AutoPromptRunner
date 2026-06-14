@@ -28,6 +28,7 @@ from .models import (
     StoredStep,
     Template,
     Worktree,
+    WorkerHeartbeat,
 )
 from .state import RunStatus, TERMINAL_STATUSES, validate_status_transition
 
@@ -57,6 +58,10 @@ _QUEUE_ACTIVE_STATUSES = (QUEUE_QUEUED, QUEUE_RUNNING)
 CANCELLATION_REQUESTED = "REQUESTED"
 CANCELLATION_COMPLETED = "COMPLETED"
 CANCELLATION_FAILED = "FAILED"
+
+# Worker heartbeat statuses (see autoprompt_runner.reconcile / worker).
+WORKER_ACTIVE = "ACTIVE"
+WORKER_STOPPED = "STOPPED"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -246,6 +251,17 @@ CREATE TABLE IF NOT EXISTS run_events (
 -- No foreign key on run_events: it is an append-only telemetry log, so emitting an event
 -- must never fail (best-effort), and events may outlive a deleted run.
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events (run_id, id);
+
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+    id INTEGER PRIMARY KEY,
+    worker_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    stopped_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_worker_heartbeats_status ON worker_heartbeats (status, updated_at);
 """
 
 # Columns added after the initial schema. Applied idempotently for backward
@@ -1911,6 +1927,165 @@ def delete_old_run_events(db_path: str, run_id: int, keep_last: int = 1000) -> i
         return cur.rowcount
     finally:
         conn.close()
+
+
+# -- worker heartbeats + reconciliation queries ------------------------------
+
+
+def create_worker_heartbeat(db_path: str, worker_id: str, status: str = WORKER_ACTIVE) -> int:
+    """Insert a worker heartbeat (ACTIVE by default) and return its id."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        now = _utcnow_iso()
+        cur = conn.execute(
+            "INSERT INTO worker_heartbeats (worker_id, status, started_at, updated_at, stopped_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (worker_id, status, now, now, None),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def update_worker_heartbeat(db_path: str, heartbeat_id: int) -> None:
+    """Refresh a heartbeat's ``updated_at`` to now (called each worker poll cycle)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute("UPDATE worker_heartbeats SET updated_at = ? WHERE id = ?", (_utcnow_iso(), heartbeat_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def stop_worker_heartbeat(db_path: str, heartbeat_id: int) -> None:
+    """Mark a heartbeat STOPPED (clean worker shutdown)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        now = _utcnow_iso()
+        conn.execute(
+            "UPDATE worker_heartbeats SET status = ?, stopped_at = ?, updated_at = ? WHERE id = ?",
+            (WORKER_STOPPED, now, now, heartbeat_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_worker_heartbeats(db_path: str, limit: int = 50) -> List[WorkerHeartbeat]:
+    """Return recent worker heartbeats, newest first."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM worker_heartbeats ORDER BY id DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+        return [_row_to_worker_heartbeat(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_active_worker_heartbeats(db_path: str) -> List[WorkerHeartbeat]:
+    """Return all heartbeats currently marked ACTIVE (may include stale ones)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM worker_heartbeats WHERE status = ? ORDER BY id DESC", (WORKER_ACTIVE,)
+        ).fetchall()
+        return [_row_to_worker_heartbeat(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def detect_stale_worker_heartbeats(db_path: str, before_iso: str) -> List[WorkerHeartbeat]:
+    """Return ACTIVE heartbeats whose ``updated_at`` is older than ``before_iso`` (stale)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM worker_heartbeats WHERE status = ? AND updated_at < ? ORDER BY id DESC",
+            (WORKER_ACTIVE, before_iso),
+        ).fetchall()
+        return [_row_to_worker_heartbeat(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_runs_by_status(db_path: str, status: str) -> List[StoredRun]:
+    """Return all runs with the given status (used by reconciliation)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM runs WHERE status = ? ORDER BY id ASC", (status,)).fetchall()
+        return [_row_to_run(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_queue_jobs_by_status(db_path: str, status: str) -> List[QueueJob]:
+    """Return all queue jobs with the given status (used by reconciliation)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute("SELECT * FROM run_queue WHERE status = ? ORDER BY id ASC", (status,)).fetchall()
+        return [_row_to_queue_job(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_active_locks(db_path: str) -> List[RunLock]:
+    """Return all locks currently marked ACTIVE (used by reconciliation)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM run_locks WHERE status = ? ORDER BY id ASC", (LOCK_ACTIVE,)
+        ).fetchall()
+        return [_row_to_run_lock(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def list_cancellations_by_status(db_path: str, status: str) -> List[RunCancellation]:
+    """Return all run cancellations with the given status (used by reconciliation)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM run_cancellations WHERE status = ? ORDER BY id ASC", (status,)
+        ).fetchall()
+        return [_row_to_cancellation(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def expire_lock_by_id(db_path: str, lock_id: int) -> None:
+    """Mark a single lock EXPIRED by id (used when its run is terminal)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE run_locks SET status = ?, updated_at = ? WHERE id = ?",
+            (LOCK_EXPIRED, _utcnow_iso(), lock_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _row_to_worker_heartbeat(row: sqlite3.Row) -> WorkerHeartbeat:
+    return WorkerHeartbeat(
+        id=row["id"],
+        worker_id=row["worker_id"],
+        status=row["status"],
+        started_at=row["started_at"],
+        updated_at=row["updated_at"],
+        stopped_at=_opt(row, "stopped_at"),
+    )
 
 
 # -- search (SQLite LIKE; no external engine, no disk reads) ------------------

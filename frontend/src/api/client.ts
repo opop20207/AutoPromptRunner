@@ -25,14 +25,17 @@ import type {
   QueueJob,
   RecoveryAttempt,
   RecoveryListResponse,
+  ReconciliationReport,
   RunComparisonResponse,
   RunLock,
   SearchAllResponse,
   SearchArtifactResult,
   SearchRunResult,
+  SystemStatus,
   Template,
   TemplateCreate,
   TemplateRender,
+  WorkerHeartbeat,
   Worktree,
   WorktreeCreate,
 } from "../types";
@@ -255,6 +258,13 @@ export const api = {
     }),
   summarizeExport: (payload: unknown) =>
     request<ExportSummary>("/export-import/summary", { method: "POST", body: JSON.stringify({ payload }) }),
+  getSystemStatus: () => request<SystemStatus>("/system/status"),
+  reconcileSystem: (dryRun: boolean) =>
+    request<ReconciliationReport>("/system/reconcile", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: dryRun }),
+    }),
+  listWorkers: () => request<WorkerHeartbeat[]>("/system/workers"),
 };
 
 // Build the SSE live-stream URL for a run. The API token (when stored) is appended as a

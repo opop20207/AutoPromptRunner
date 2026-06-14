@@ -17,6 +17,7 @@ import { RunForm } from "./components/RunForm";
 import { RunList } from "./components/RunList";
 import { SearchPanel } from "./components/SearchPanel";
 import { Sidebar, type SectionKey } from "./components/Sidebar";
+import { SystemPanel } from "./components/SystemPanel";
 import { TemplateForm } from "./components/TemplateForm";
 import { TemplateList } from "./components/TemplateList";
 import { WorktreeForm } from "./components/WorktreeForm";
@@ -168,7 +169,17 @@ export default function App() {
 
       {section === "queue" && (
         <Section title="Queue">
-          <QueuePanel refreshKey={runRefresh} onChanged={onRunChanged} />
+          <QueuePanel
+            refreshKey={runRefresh}
+            onChanged={onRunChanged}
+            onOpenSystem={() => setSection("system")}
+          />
+        </Section>
+      )}
+
+      {section === "system" && (
+        <Section title="System & Recovery">
+          <SystemPanel refreshKey={runRefresh} onChanged={onRunChanged} onOpenRun={openRun} />
         </Section>
       )}
 

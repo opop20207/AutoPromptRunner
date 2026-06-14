@@ -38,6 +38,17 @@ LOCK_ACQUIRED = "lock_acquired"
 LOCK_RELEASED = "lock_released"
 WORKER_MESSAGE = "worker_message"
 
+# Reconciliation events (stale-state recovery; see autoprompt_runner.reconcile). The two
+# reconciliation_* events are system-scoped and recorded under SYSTEM_RUN_ID.
+RECONCILIATION_STARTED = "reconciliation_started"
+RECONCILIATION_FINISHED = "reconciliation_finished"
+STALE_RUN_FAILED = "stale_run_failed"
+STALE_LOCK_EXPIRED = "stale_lock_expired"
+STALE_JOB_FAILED = "stale_job_failed"
+
+# Run id used for system-scoped events that do not belong to a single run.
+SYSTEM_RUN_ID = 0
+
 # Terminal event types: once one is sent, the SSE stream for that run can close.
 TERMINAL_EVENT_TYPES = frozenset({RUN_DONE, RUN_FAILED, RUN_STOPPED})
 
