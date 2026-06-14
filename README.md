@@ -13,8 +13,50 @@ records what changed. Three providers are available: `mock` (offline, determinis
 has no third-party runtime dependencies (standard library only); an optional FastAPI
 HTTP backend is available via the `api` extra.
 
-This is the **v0.1 MVP**: a stable, local-first end-to-end tool. See the section index
-above (or scroll) for the full feature tour; each capability has its own section below.
+This is the **v0.1.0** release candidate: a stable, local-first end-to-end tool. See
+[RELEASE_NOTES.md](RELEASE_NOTES.md) and [CHANGELOG.md](CHANGELOG.md) for the release
+summary, and the sections below for the full feature tour.
+
+## Quickstart
+
+Requirements: Python >= 3.11 (no third-party packages for the CLI core), and Node.js + npm
+only if you want the web UI. Neither Claude Code nor Codex is required — the offline `mock`
+provider works out of the box.
+
+```
+# 1. Clone the repository
+git clone https://github.com/opop20207/AutoPromptRunner.git
+cd AutoPromptRunner
+
+# 2. One-command local setup (venv + backend + frontend deps + config + seed)
+scripts/setup_local.sh
+source .venv/bin/activate          # or: source .venv/Scripts/activate (Windows Git Bash)
+
+# 3-5. Start the API, the worker, and the web UI (each in its own terminal)
+scripts/dev_api.sh                 # http://127.0.0.1:8000
+scripts/dev_worker.sh
+scripts/dev_frontend.sh            # http://localhost:5173
+
+# 6. Create a project (point it at a repo; use mock to try it offline)
+python -m autoprompt_runner.cli project add --name demo --repo-path . --provider mock --max-loops 3
+
+# 7. Create a run
+python -m autoprompt_runner.cli run --project demo --prompt "Review this project"
+
+# 8. Approve (or reject) the generated next prompt
+python -m autoprompt_runner.cli approve-next --run-id 1      # or: reject-next --run-id 1
+
+# 9. Inspect the captured artifacts
+python -m autoprompt_runner.cli show-artifacts --run-id 1
+python -m autoprompt_runner.cli show-run --id 1
+```
+
+10. As needed, use **templates** (`template seed` / `run --template ...`), **provider
+profiles** (`provider seed` / `provider add ...`), and **Git worktrees**
+(`worktree create ...` / `run --worktree ...`) — see the sections below.
+
+Verify a local checkout at any time with `scripts/check_all.sh` (the primary release check)
+and diagnose an environment with `scripts/doctor.sh`.
 
 ## v0.1 capabilities
 

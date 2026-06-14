@@ -119,6 +119,30 @@ class E2ECliFlowTests(unittest.TestCase):
         code, out, _ = _run_cli(["config", "validate"])
         self.assertEqual(code, 0)
 
+        # 17) provider profiles: seed + list (mock is always available; no external CLI needed)
+        self._ok(["provider", "seed"])
+        out, _ = self._ok(["provider", "list"])
+        self.assertIn("mock", out)
+
+        # 18) search finds an earlier run by its prompt text
+        out, _ = self._ok(["search", "runs", "--query", "Improve"])
+        self.assertIn(str(run_a), out)
+
+        # 19) compare two runs, and 20) view a run's prompt chain
+        out, _ = self._ok(["compare", "runs", "--run-a", str(run_a), "--run-b", str(run_c)])
+        self.assertIn("Summary:", out)
+        out, _ = self._ok(["chain", "show", "--run-id", str(run_a)])
+        self.assertIn(f"Chain for run #{run_a}", out)
+
+        # 21) export to JSON, then import into a fresh database (relationships preserved)
+        export_path = os.path.join(self._tmp.name, "export.json")
+        self._ok(["export", "data", "--output", export_path])
+        self.assertTrue(os.path.exists(export_path))
+        dst = os.path.join(self._tmp.name, "imported.db")
+        code, out, err = _run_cli(["import", "data", "--input", export_path, "--db-path", dst])
+        self.assertEqual(code, 0, err)
+        self.assertGreater(len(storage.list_runs(dst)), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

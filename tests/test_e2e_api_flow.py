@@ -99,6 +99,37 @@ class E2EApiFlowTests(unittest.TestCase):
         self.assertEqual(artifacts.status_code, 200)
         self.assertIn("runner_stdout", [a["type"] for a in artifacts.json()])
 
+        # 13) provider profiles: seed + list (mock always available; no external CLI needed)
+        self.assertEqual(self.client.post("/providers/seed").status_code, 200)
+        self.assertIn("mock", [p["name"] for p in self.client.get("/providers").json()])
+
+        # 14) search finds the run by prompt text
+        found = self.client.get("/search/runs", params={"q": "Improve"}).json()
+        self.assertTrue(any(r["id"] == run_id for r in found))
+
+        # 15) compare two runs + 16) view the prompt chain
+        cmp = self.client.get("/compare/runs", params={"run_a": run_id, "run_b": queued_id})
+        self.assertEqual(cmp.status_code, 200)
+        self.assertIn("summary", cmp.json())
+        chain = self.client.get(f"/chains/runs/{run_id}")
+        self.assertEqual(chain.status_code, 200)
+        self.assertEqual(chain.json()["run_id"], run_id)
+
+        # 17) export the data, then import it into a fresh database
+        payload = self.client.post("/export-import/export", json={}).json()
+        self.assertEqual(payload["format"], "autoprompt-runner-export")
+        summary = self.client.post("/export-import/summary", json={"payload": payload}).json()
+        self.assertGreaterEqual(summary["counts"]["runs"], 1)
+        other = os.path.join(self._tmp.name, "imported.db")
+        storage.init_db(other)
+        app.dependency_overrides[get_db_path] = lambda: other
+        try:
+            result = self.client.post("/export-import/import", json={"payload": payload, "mode": "merge"})
+            self.assertEqual(result.status_code, 200)
+            self.assertGreater(result.json()["imported"], 0)
+        finally:
+            app.dependency_overrides[get_db_path] = lambda: self.db
+
 
 if __name__ == "__main__":
     unittest.main()

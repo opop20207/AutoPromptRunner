@@ -235,32 +235,49 @@ Generation logic:
 
 ## v0.1 Status
 
-AutoPromptRunner has reached its **v0.1 MVP**: a stable, local-first, end-to-end tool. The
-parts of the roadmap above that are now delivered are listed below; the rest is post-v0.1.
+### v0.1.0 release status
 
-### Completed MVP capabilities
+AutoPromptRunner is at its **v0.1.0 release candidate**: a stable, local-first, end-to-end
+tool. The version is a single source of truth in `src/autoprompt_runner/__init__.py` and is
+surfaced by `autoprompt-runner version`. See [CHANGELOG.md](CHANGELOG.md) and
+[RELEASE_NOTES.md](RELEASE_NOTES.md) for the release summary. The full suite (backend tests,
+config validation, mock provider check, and the frontend build) is validated by
+`scripts/check_all.sh`.
 
-- CLI-first orchestration with SQLite persistence (projects, runs, steps, approvals, artifacts).
-- Providers: `MockRunner`, `ClaudeCodeRunner`, and `CodexRunner` (subprocess; fail safely when the CLI is absent).
+### Completed capabilities
+
+- CLI-first orchestration with SQLite persistence (projects, runs, steps, approvals,
+  artifacts, templates, worktrees, locks, queue, cancellations, provider profiles, recovery).
+- Providers: `MockRunner`, `ClaudeCodeRunner`, and `CodexRunner` (subprocess; fail safely
+  when the CLI is absent), configured via provider profiles with availability checks.
 - Bounded prompt loop, rule-based next-prompt generation, and the approval gate.
-- Read-only Git artifact capture and the safety checks (blocked commands, secret-file warnings, hard limits).
+- Read-only Git artifact capture and the safety checks (blocked commands, secret-file
+  warnings, hard limits).
 - Project profiles and reusable prompt templates.
 - Git worktree parallel sessions and one-active-lock-per-workspace execution locks.
 - A local SQLite-backed run queue with a single background worker, and run cancellation.
 - Centralized configuration (TOML file + `AUTOPROMPT_*` environment overrides).
+- Search, run comparison, prompt chain history, failure recovery, and JSON export / import.
 - A FastAPI HTTP backend and a React/Vite frontend, both covered by end-to-end flow tests.
+- Local install / packaging scripts (`setup_local`, `check_all`, `doctor`,
+  `package_release`, ...).
 
-### Remaining post-v0.1 roadmap
+### Known limitations
 
+- Local-first only; **no authentication** and no multi-user / hosted deployment.
+- No distributed workers (a single local worker); no cloud sync or browser automation.
+- No WebSocket / SSE streaming -- run logs update per completed step (polling).
+- Claude Code and Codex must be installed and authenticated separately.
+- Cancellation of a *running* external agent is best-effort and local to the worker process
+  (not guaranteed across machine restarts or from a different process).
+- Provider availability checks use command discovery only (no real prompt is executed).
+- Export redaction is best-effort, not a secrecy guarantee.
+
+### Post-v0.1 roadmap
+
+- A CI workflow and an automated release-verification pass.
 - Authentication and multi-user / hosted deployment.
 - Distributed workers and concurrency beyond one local worker.
 - True live streaming of run logs (SSE / WebSocket) -- currently polling only.
 - Queue retries/backoff, structured logging, metrics, and richer observability.
 - A database beyond SQLite for higher concurrency; cloud sync.
-
-### Known limitations
-
-- Process cancellation of a *running* external agent is best-effort and local to the worker
-  process; it is not guaranteed across machine restarts or from a different process.
-- Run logs update per completed step (polling), not character-by-character.
-- No authentication: the API and database are intended for local, single-user use.
