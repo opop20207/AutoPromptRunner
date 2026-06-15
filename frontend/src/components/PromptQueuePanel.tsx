@@ -179,6 +179,29 @@ export function PromptQueuePanel({ refreshKey, onChanged }: { refreshKey?: numbe
             </button>
           </div>
 
+          {summary.target ? (
+            <div className="commit-head">
+              <strong>Bound target:</strong>
+              <span>{summary.target.name}</span>
+              <StatusBadge status={summary.target.status} />
+              <span className="muted mono">verify: {summary.target.verification_mode}</span>
+              {summary.target.last_verification_status ? (
+                <StatusBadge status={summary.target.last_verification_status} />
+              ) : (
+                <span className="muted">(not verified)</span>
+              )}
+            </div>
+          ) : (
+            <div className="warning-box">No app target is bound to this queue — injection is disabled.</div>
+          )}
+          {summary.target &&
+            (!summary.target.last_verification_status || summary.target.last_verification_status === "mismatch") && (
+              <div className="warning-box">
+                Target not verified (or last check was a mismatch). Verify it in the App Targets panel, and always
+                confirm you focused the correct Claude Code input before injecting.
+              </div>
+            )}
+
           <InjectionPanel summary={summary} onChanged={onChildChanged} />
 
           <div className="subsection">

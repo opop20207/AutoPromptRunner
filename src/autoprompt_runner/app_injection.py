@@ -209,16 +209,26 @@ def inject_prompt_to_active_window(
     prompt: str,
     submit_mode: str = SUBMIT_MODE_PASTE_ONLY,
     restore_clipboard_after: bool = False,
+    dry_run: bool = False,
 ) -> InjectionResult:
     """Copy ``prompt`` to the clipboard and (if automation is available) paste/submit it.
 
-    Never injects an empty prompt. When ``pyautogui`` is unavailable this runs in clipboard-only
-    mode (the prompt is on the clipboard for the user to paste manually). The clipboard is only
-    restored when a paste was actually sent (otherwise the prompt must stay on the clipboard for
-    the manual paste). The prompt text is never logged.
+    Never injects an empty prompt. When ``dry_run`` is true, the clipboard is **not** modified and
+    nothing is pasted -- it returns a result describing what would happen (used for the safety
+    preview). When ``pyautogui`` is unavailable this runs in clipboard-only mode (the prompt is on
+    the clipboard for the user to paste manually). The clipboard is only restored when a paste was
+    actually sent (otherwise the prompt must stay on the clipboard for the manual paste). The
+    prompt text is never logged.
     """
     if not (prompt or "").strip():
         raise InjectionError("empty", "cannot inject an empty prompt")
+
+    if dry_run:
+        return InjectionResult(
+            clipboard_set=False, paste_sent=False, submit_sent=False, clipboard_restored=False,
+            automation_available=_have_pyautogui(), submit_mode=submit_mode,
+            message="dry run: clipboard and keyboard were not touched",
+        )
 
     previous = backup_clipboard() if restore_clipboard_after else None
     if not copy_prompt_to_clipboard(prompt):

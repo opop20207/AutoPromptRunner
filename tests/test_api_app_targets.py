@@ -88,10 +88,37 @@ class AppTargetApiTests(unittest.TestCase):
         self.assertEqual(self.client.delete(f"/app-targets/{tid}").status_code, 200)
         self.assertEqual(self.client.get(f"/app-targets/{tid}").status_code, 404)
 
+    def test_create_with_verification_fields(self):
+        resp = self.client.post("/app-targets", json={
+            "name": "verified", "verification_mode": "window_title_hint", "expected_window_title": "FactoryColony",
+        })
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["verification_mode"], "window_title_hint")
+        self.assertTrue(body["target_fingerprint"])
+
+    def test_active_window_endpoint(self):
+        resp = self.client.get("/app-targets/active-window")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("available", resp.json())
+        self.assertIn("platform", resp.json())
+
+    def test_verify_endpoint(self):
+        tid = self._create().json()["id"]  # default manual_confirm
+        resp = self.client.post(f"/app-targets/{tid}/verify")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "manual_required")
+        # Persisted on the target.
+        self.assertEqual(self.client.get(f"/app-targets/{tid}").json()["last_verification_status"], "manual_required")
+
+    def test_verify_missing_404(self):
+        self.assertEqual(self.client.post("/app-targets/9999/verify").status_code, 404)
+
     def test_auth_required_when_enabled(self):
         os.environ["AUTOPROMPT_AUTH_ENABLED"] = "true"
         os.environ["AUTOPROMPT_API_TOKEN"] = "secret-token"
         self.assertEqual(self.client.get("/app-targets").status_code, 401)
+        self.assertEqual(self.client.get("/app-targets/active-window").status_code, 401)
         self.assertEqual(
             self.client.get("/app-targets", headers={"Authorization": "Bearer secret-token"}).status_code, 200
         )

@@ -6,6 +6,7 @@ import { AuthPanel } from "./components/AuthPanel";
 import { Dashboard } from "./components/Dashboard";
 import { Layout, Section } from "./components/Layout";
 import { PromptQueuePanel } from "./components/PromptQueuePanel";
+import { TargetVerificationPanel } from "./components/TargetVerificationPanel";
 import { ProjectForm } from "./components/ProjectForm";
 import { ProjectList } from "./components/ProjectList";
 import { ProviderForm } from "./components/ProviderForm";
@@ -90,9 +91,14 @@ export default function App() {
       )}
 
       {section === "app-targets" && (
-        <Section title="Claude Code App Targets">
-          <AppTargetPanel refreshKey={overviewRefresh} onChanged={bumpOverview} />
-        </Section>
+        <>
+          <Section title="Claude Code App Targets">
+            <AppTargetPanel refreshKey={overviewRefresh} onChanged={bumpOverview} />
+          </Section>
+          <Section title="Target Verification">
+            <TargetVerificationPanel refreshKey={overviewRefresh} />
+          </Section>
+        </>
       )}
 
       {section === "prompt-queues" && (

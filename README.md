@@ -80,6 +80,85 @@ python -m autoprompt_runner.cli run --project demo --prompt "Review this project
 python -m autoprompt_runner.cli approve-next --run-id 1
 ```
 
+## App target verification and multi-pane binding
+
+**Why this matters.** The Claude Code app can show several sessions or panes side by side. If a
+queue blindly pasted into "the active window", Prompt#34 could land in the wrong session. So an
+**app target** records *which* session/pane you mean, and injection runs a **verification** check
+plus an explicit confirmation to reduce the risk of injecting into the wrong place.
+
+**Target binding model.** Each app target carries a `target_kind` (`active_window` /
+`window_title` / `manual_session` / `manual_pane`), descriptive metadata, and **expectation**
+fields used for verification: `expected_window_title`, `expected_app_name`,
+`expected_session_label`, `expected_project_path`, `expected_pane_label`, `expected_pane_index`.
+A stable `target_fingerprint` is derived from these so a change to the binding is detectable.
+A `verification_mode` picks how the active window is compared:
+
+- `manual_confirm` (default, fully supported) — no automated check; you confirm you focused the
+  right input before each injection.
+- `window_title_hint` / `app_name_hint` (best-effort) — when the active window can be read, its
+  title / process name is compared against the expectation; a mismatch blocks injection.
+- `none` — no automated check (still requires manual confirmation).
+
+`manual_pane` is **metadata only** in this step — there is no reliable OS-level pane detection,
+and no OCR / screenshots / browser automation is used.
+
+**Active window verification is best-effort.** On Windows the active window title (and owning
+process name) is read via `ctypes`; on macOS/Linux it is reported as *unavailable*. When the
+window cannot be read, verification returns `unavailable` and the flow falls back to **manual
+confirmation** — detection being unavailable never blocks injection on its own.
+
+**Manual session/pane confirmation workflow.** Injection is always explicit: a *dry-run* builds a
+safety summary (target, expected session/pane, active-window summary, mismatch warnings, prompt
+preview) without touching the clipboard; then you confirm you focused the correct input; then the
+prompt is injected and becomes `WAITING_COMPLETION`. A detected **mismatch blocks injection
+unless you explicitly override it.**
+
+**CLI — verification:**
+
+```
+python -m autoprompt_runner.cli app-target add --name "FactoryColony Claude Session" \
+  --session-label "FactoryColony" --verification-mode window_title_hint \
+  --expected-window-title "FactoryColony" --expected-app-name "Claude.exe"
+python -m autoprompt_runner.cli app-target check-active-window          # active window info (or a clean reason)
+python -m autoprompt_runner.cli app-target verify --name "FactoryColony Claude Session"
+python -m autoprompt_runner.cli prompt-queue inject-current --queue-id 1 --dry-run    # safety summary only
+python -m autoprompt_runner.cli prompt-queue inject-current --queue-id 1 --yes        # inject after confirming
+python -m autoprompt_runner.cli prompt-queue inject-current --queue-id 1 --yes --allow-target-mismatch
+```
+
+**API — verification:**
+
+```
+curl http://127.0.0.1:8000/app-targets/active-window
+curl -X POST http://127.0.0.1:8000/app-targets/1/verify
+curl -X POST http://127.0.0.1:8000/prompt-queues/1/inject-current \
+  -H "Content-Type: application/json" \
+  -d '{"user_confirmed":true,"allow_target_mismatch":false,"restore_clipboard_after":false,"dry_run":false}'
+```
+
+`inject-current` returns the target safety summary + prompt status. It requires
+`user_confirmed: true` for a real injection, returns **409** on a target mismatch (unless
+`allow_target_mismatch: true`), **409** for a disabled target, and **404** for a missing target;
+`dry_run: true` returns the safety summary only and changes nothing.
+
+**Web UI — injection safety workflow.** The *App Targets* section has a **Target Verification**
+panel (*Check active window* / *Verify target*, with the expected metadata and the result). The
+*Prompt Queues* injection panel runs a dry-run first and shows the target, expected session/pane,
+active-window summary, mismatch warnings, and the prompt preview. The **Inject** button stays
+disabled until you check *"I focused the correct Claude Code session/pane input"*; if a mismatch
+is detected, a second checkbox *"Inject anyway despite target mismatch"* is also required. After
+injection: *"After Claude Code finishes, click Mark Complete."*
+
+**Limitations.**
+
+- **No OCR** and **no image recognition** — verification uses window metadata only.
+- **No automatic pane recognition** — multi-pane targets are recorded, not auto-located.
+- **Active window detection is best-effort** (Windows title via `ctypes`; unavailable on
+  macOS/Linux), and never replaces focusing the correct input yourself.
+- **You must focus the correct Claude Code input** before injecting.
+- **A mismatch blocks injection** unless you explicitly override it.
+
 ## v0.1 capabilities
 
 - Local-first execution (no remote service required)

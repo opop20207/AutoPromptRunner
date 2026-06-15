@@ -85,5 +85,53 @@ class AppTargetTests(unittest.TestCase):
         self.assertIsNotNone(app_targets.get_target(self.db, t.id).last_used_at)
 
 
+class VerificationTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_fingerprint_generated_and_changes(self):
+        a = app_targets.create_target(self.db, name="A", expected_window_title="FC")
+        self.assertTrue(a.target_fingerprint)
+        b = app_targets.create_target(self.db, name="B", expected_window_title="OTHER")
+        self.assertNotEqual(a.target_fingerprint, b.target_fingerprint)
+
+    def test_expected_fields_default_from_descriptive(self):
+        t = app_targets.create_target(self.db, name="t", session_label="FactoryColony", app_name="Claude Code")
+        self.assertEqual(t.expected_session_label, "FactoryColony")
+        self.assertEqual(t.expected_app_name, "Claude Code")
+
+    def test_invalid_verification_mode_rejected(self):
+        with self.assertRaises(app_targets.AppTargetError):
+            app_targets.create_target(self.db, name="t", verification_mode="bogus")
+
+    def test_invalid_target_kind_rejected(self):
+        with self.assertRaises(app_targets.AppTargetError):
+            app_targets.create_target(self.db, name="t", target_kind="bogus")
+
+    def test_require_target_confirmation(self):
+        manual = app_targets.create_target(self.db, name="m", verification_mode="manual_confirm")
+        self.assertFalse(app_targets.require_target_confirmation(manual, user_confirmed=False))
+        self.assertTrue(app_targets.require_target_confirmation(manual, user_confirmed=True))
+
+    def test_verify_manual_confirm_persists_status(self):
+        t = app_targets.create_target(self.db, name="t", verification_mode="manual_confirm")
+        result = app_targets.verify_app_target(self.db, t.id)
+        self.assertEqual(result.status, "manual_required")
+        self.assertEqual(app_targets.get_target(self.db, t.id).last_verification_status, "manual_required")
+
+    def test_safety_summary_requires_confirmation(self):
+        t = app_targets.create_target(self.db, name="t", verification_mode="manual_confirm", session_label="FC")
+        summary = app_targets.build_injection_safety_summary(self.db, t)
+        self.assertTrue(summary.requires_confirmation)
+        self.assertFalse(summary.mismatch)
+        self.assertEqual(summary.expected_session_label, "FC")
+        self.assertTrue(summary.warnings)  # manual confirmation warning
+
+
 if __name__ == "__main__":
     unittest.main()

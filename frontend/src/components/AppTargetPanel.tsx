@@ -1,18 +1,23 @@
 import { useEffect, useState } from "react";
 
 import { api, errorMessage } from "../api/client";
-import { SUBMIT_MODES, TARGET_MODES, type AppTarget } from "../types";
+import { SUBMIT_MODES, TARGET_MODES, VERIFICATION_MODES, type AppTarget } from "../types";
 import { StatusBadge } from "./StatusBadge";
 
-// Manage Claude Code app injection targets. A target names a specific app session/pane so a
-// prompt is injected into the place the user intends -- not just "the Claude Code app".
+// Manage Claude Code app injection targets. A target names a specific app session/pane (with
+// verification expectations) so a prompt is injected where intended -- not just "the app".
 export function AppTargetPanel({ refreshKey, onChanged }: { refreshKey?: number; onChanged?: () => void }) {
   const [targets, setTargets] = useState<AppTarget[]>([]);
   const [name, setName] = useState("");
   const [sessionLabel, setSessionLabel] = useState("");
   const [paneLabel, setPaneLabel] = useState("");
+  const [paneIndex, setPaneIndex] = useState("");
   const [targetMode, setTargetMode] = useState<string>(TARGET_MODES[0]);
   const [submitMode, setSubmitMode] = useState<string>(SUBMIT_MODES[0]);
+  const [verificationMode, setVerificationMode] = useState<string>(VERIFICATION_MODES[0]);
+  const [expectedWindowTitle, setExpectedWindowTitle] = useState("");
+  const [expectedAppName, setExpectedAppName] = useState("");
+  const [expectedProjectPath, setExpectedProjectPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -46,12 +51,23 @@ export function AppTargetPanel({ refreshKey, onChanged }: { refreshKey?: number;
         name: name.trim(),
         session_label: sessionLabel.trim() || null,
         pane_label: paneLabel.trim() || null,
+        pane_index: paneIndex.trim() ? Number(paneIndex) : null,
         target_mode: targetMode,
         submit_mode: submitMode,
+        verification_mode: verificationMode,
+        expected_window_title: expectedWindowTitle.trim() || null,
+        expected_app_name: expectedAppName.trim() || null,
+        expected_session_label: sessionLabel.trim() || null,
+        expected_project_path: expectedProjectPath.trim() || null,
+        expected_pane_label: paneLabel.trim() || null,
       });
       setName("");
       setSessionLabel("");
       setPaneLabel("");
+      setPaneIndex("");
+      setExpectedWindowTitle("");
+      setExpectedAppName("");
+      setExpectedProjectPath("");
       await load();
       onChanged?.();
     } catch (err) {
@@ -61,12 +77,11 @@ export function AppTargetPanel({ refreshKey, onChanged }: { refreshKey?: number;
     }
   }
 
-  async function toggle(target: AppTarget) {
+  async function act(fn: () => Promise<unknown>) {
     setBusy(true);
     setError(null);
     try {
-      if (target.status === "ACTIVE") await api.disableAppTarget(target.id);
-      else await api.enableAppTarget(target.id);
+      await fn();
       await load();
       onChanged?.();
     } catch (err) {
@@ -79,7 +94,7 @@ export function AppTargetPanel({ refreshKey, onChanged }: { refreshKey?: number;
   return (
     <div>
       <div className="warning-box">
-        MVP uses <strong>active-window manual injection</strong>. Focus the correct Claude Code input
+        MVP uses <strong>active window manual injection</strong>. Focus the correct Claude Code input
         before injecting — AutoPromptRunner pastes into whatever window is active.
       </div>
 
@@ -92,29 +107,53 @@ export function AppTargetPanel({ refreshKey, onChanged }: { refreshKey?: number;
           Session label
           <input value={sessionLabel} onChange={(e) => setSessionLabel(e.target.value)} placeholder="FactoryColony" />
         </label>
+        <div className="row-actions" style={{ gap: 10 }}>
+          <label style={{ flex: 1 }}>
+            Pane label
+            <input value={paneLabel} onChange={(e) => setPaneLabel(e.target.value)} placeholder="left pane" />
+          </label>
+          <label style={{ width: 110 }}>
+            Pane index
+            <input value={paneIndex} onChange={(e) => setPaneIndex(e.target.value)} placeholder="0" />
+          </label>
+        </div>
+        <div className="row-actions" style={{ gap: 10 }}>
+          <label style={{ flex: 1 }}>
+            Target mode
+            <select value={targetMode} onChange={(e) => setTargetMode(e.target.value)}>
+              {TARGET_MODES.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ flex: 1 }}>
+            Submit mode
+            <select value={submitMode} onChange={(e) => setSubmitMode(e.target.value)}>
+              {SUBMIT_MODES.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ flex: 1 }}>
+            Verification
+            <select value={verificationMode} onChange={(e) => setVerificationMode(e.target.value)}>
+              {VERIFICATION_MODES.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+        </div>
         <label>
-          Pane label (optional)
-          <input value={paneLabel} onChange={(e) => setPaneLabel(e.target.value)} placeholder="left pane" />
+          Expected window title (verification hint)
+          <input value={expectedWindowTitle} onChange={(e) => setExpectedWindowTitle(e.target.value)} placeholder="FactoryColony — Claude" />
         </label>
         <label>
-          Target mode
-          <select value={targetMode} onChange={(e) => setTargetMode(e.target.value)}>
-            {TARGET_MODES.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+          Expected app name (verification hint)
+          <input value={expectedAppName} onChange={(e) => setExpectedAppName(e.target.value)} placeholder="Claude.exe" />
         </label>
         <label>
-          Submit mode
-          <select value={submitMode} onChange={(e) => setSubmitMode(e.target.value)}>
-            {SUBMIT_MODES.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+          Expected project path
+          <input value={expectedProjectPath} onChange={(e) => setExpectedProjectPath(e.target.value)} placeholder="C:\\Dev\\FactoryColony" />
         </label>
         <button type="submit" className="primary" disabled={busy}>
           Create app target
@@ -133,10 +172,9 @@ export function AppTargetPanel({ refreshKey, onChanged }: { refreshKey?: number;
                 <th>ID</th>
                 <th>Name</th>
                 <th>Session</th>
-                <th>Pane</th>
-                <th>Mode</th>
-                <th>Submit</th>
+                <th>Verify mode</th>
                 <th>Status</th>
+                <th>Last verification</th>
                 <th></th>
               </tr>
             </thead>
@@ -146,16 +184,20 @@ export function AppTargetPanel({ refreshKey, onChanged }: { refreshKey?: number;
                   <td>#{t.id}</td>
                   <td>{t.name}</td>
                   <td>{t.session_label ?? "—"}</td>
-                  <td>{t.pane_label ?? "—"}</td>
-                  <td className="mono">{t.target_mode}</td>
-                  <td className="mono">{t.submit_mode}</td>
+                  <td className="mono">{t.verification_mode}</td>
                   <td>
                     <StatusBadge status={t.status} />
                   </td>
+                  <td>{t.last_verification_status ? <StatusBadge status={t.last_verification_status} /> : "—"}</td>
                   <td>
-                    <button disabled={busy} onClick={() => void toggle(t)}>
-                      {t.status === "ACTIVE" ? "Disable" : "Enable"}
-                    </button>
+                    <div className="row-actions">
+                      <button disabled={busy} onClick={() => void act(() => api.verifyAppTarget(t.id))}>
+                        Verify
+                      </button>
+                      <button disabled={busy} onClick={() => void act(() => (t.status === "ACTIVE" ? api.disableAppTarget(t.id) : api.enableAppTarget(t.id)))}>
+                        {t.status === "ACTIVE" ? "Disable" : "Enable"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

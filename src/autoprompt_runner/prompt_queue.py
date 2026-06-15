@@ -82,9 +82,11 @@ class QueueSummary:
 @dataclass
 class InjectOutcome:
     summary: QueueSummary
-    prompt: QueuedPrompt
+    prompt: Optional[QueuedPrompt]
     injection: app_injection.InjectionResult
     target_summary: str
+    safety: "app_targets.InjectionSafetySummary"
+    dry_run: bool = False
 
 
 def _now() -> str:
@@ -198,38 +200,69 @@ def inject_current_prompt(
     db_path: str,
     queue_id: int,
     *,
-    injector: Optional[Injector] = None,
+    user_confirmed: bool = False,
+    allow_target_mismatch: bool = False,
     restore_clipboard_after: bool = False,
+    dry_run: bool = False,
+    injector: Optional[Injector] = None,
 ) -> InjectOutcome:
     """Inject the current prompt into the queue's app target. Explicit action only.
 
-    Rejects when the queue is paused/terminal, when another prompt is already waiting for
-    completion, when there is no prompt to inject, or when the target is missing/disabled. On
-    success the prompt becomes WAITING_COMPLETION and the user must mark it complete next.
+    Steps: load the queue + bound target, build a verification safety summary, require explicit
+    user confirmation, reject a target mismatch (unless ``allow_target_mismatch``), then inject
+    and set the prompt WAITING_COMPLETION. ``dry_run`` returns the safety summary + prompt preview
+    and touches nothing (no clipboard, no paste, no state change). Rejects a paused/terminal queue,
+    a disabled/missing target, an already-waiting prompt, or no injectable prompt.
     """
     db_path = storage.init_db(db_path)
     queue = _require_queue(db_path, queue_id)
-    if queue.status == QUEUE_PAUSED:
-        raise PromptQueueError("invalid_state", "queue is paused; resume it before injecting")
-    if queue.status in _QUEUE_TERMINAL:
-        raise PromptQueueError("invalid_state", f"queue is {queue.status}; cannot inject")
     if queue.app_target_id is None:
         raise PromptQueueError("invalid", "queue has no app target bound; bind one before injecting")
     target = storage.get_app_target(db_path, queue.app_target_id)
     if target is None:
         raise PromptQueueError("not_found", f"app target {queue.app_target_id} not found")
+
+    safety = app_targets.build_injection_safety_summary(db_path, target)
+    current = storage.get_current_prompt(db_path, queue_id)
+
+    # Dry run: preview only -- no rejections beyond a missing target, no clipboard/paste/state change.
+    if dry_run:
+        message = "dry run: clipboard and keyboard were not touched" if current is not None else \
+            "dry run: no prompt is ready to inject"
+        preview_result = app_injection.InjectionResult(
+            clipboard_set=False, paste_sent=False, submit_sent=False, clipboard_restored=False,
+            automation_available=app_injection._have_pyautogui(), submit_mode=target.submit_mode, message=message,
+        )
+        return InjectOutcome(
+            summary=build_queue_summary(db_path, queue_id), prompt=current, injection=preview_result,
+            target_summary=app_targets.target_summary(target), safety=safety, dry_run=True,
+        )
+
+    # Real injection: enforce the safety gates.
+    if queue.status == QUEUE_PAUSED:
+        raise PromptQueueError("invalid_state", "queue is paused; resume it before injecting")
+    if queue.status in _QUEUE_TERMINAL:
+        raise PromptQueueError("invalid_state", f"queue is {queue.status}; cannot inject")
     if target.status == app_targets.STATUS_DISABLED:
         raise PromptQueueError("invalid_state", f"app target '{target.name}' is disabled")
-
     active = _active_prompt(db_path, queue_id)
     if active is not None:
         raise PromptQueueError(
             "invalid_state",
             f"prompt #{active.id} is {active.status}; mark it complete (or skip it) before injecting the next",
         )
-    current = storage.get_current_prompt(db_path, queue_id)
     if current is None or current.status not in _PROMPT_INJECTABLE:
         raise PromptQueueError("invalid_state", "no prompt is ready to inject")
+    if not app_targets.require_target_confirmation(target, user_confirmed):
+        raise PromptQueueError(
+            "not_confirmed",
+            "injection requires user_confirmed=true -- focus the correct Claude Code input first",
+        )
+    if safety.mismatch and not allow_target_mismatch:
+        raise PromptQueueError(
+            "mismatch",
+            f"active window does not match target '{target.name}'; pass allow_target_mismatch to override",
+        )
 
     # Validate (raises InjectionError on empty/disabled), then perform the injection.
     app_injection.validate_injection_request(target, current.prompt)
@@ -247,13 +280,15 @@ def inject_current_prompt(
         raise
     storage.mark_prompt_submitted(db_path, current.id)  # -> WAITING_COMPLETION
     storage.mark_app_target_used(db_path, target.id)
+    storage.mark_app_target_verified(db_path, target.id, safety.verification_status, safety.verification_message)
 
-    summary = build_queue_summary(db_path, queue_id)
     return InjectOutcome(
-        summary=summary,
+        summary=build_queue_summary(db_path, queue_id),
         prompt=storage.get_queued_prompt(db_path, current.id),
         injection=result,
         target_summary=app_targets.target_summary(target),
+        safety=safety,
+        dry_run=False,
     )
 
 

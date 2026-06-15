@@ -102,6 +102,14 @@ class InjectTests(unittest.TestCase):
         self.assertFalse(result.clipboard_restored)
         self.assertNotIn(("restore", "PREVIOUS"), self.calls)
 
+    def test_dry_run_touches_nothing(self):
+        result = app_injection.inject_prompt_to_active_window("do it", dry_run=True)
+        self.assertFalse(result.clipboard_set)
+        self.assertFalse(result.paste_sent)
+        self.assertFalse(result.submit_sent)
+        self.assertEqual(self.calls, [])  # neither clipboard nor hotkeys were used
+        self.assertIn("dry run", result.message)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -593,6 +593,18 @@ class AppTargetResponse(BaseModel):
     created_at: str
     updated_at: str
     last_used_at: Optional[str] = None
+    target_kind: str = "active_window"
+    target_fingerprint: Optional[str] = None
+    expected_window_title: Optional[str] = None
+    expected_app_name: Optional[str] = None
+    expected_session_label: Optional[str] = None
+    expected_project_path: Optional[str] = None
+    expected_pane_label: Optional[str] = None
+    expected_pane_index: Optional[int] = None
+    verification_mode: str = "manual_confirm"
+    last_verified_at: Optional[str] = None
+    last_verification_status: Optional[str] = None
+    last_verification_message: Optional[str] = None
 
 
 class AppTargetCreateRequest(BaseModel):
@@ -607,6 +619,14 @@ class AppTargetCreateRequest(BaseModel):
     pane_label: Optional[str] = None
     pane_index: Optional[int] = None
     confirm_before_inject: bool = True
+    target_kind: str = "active_window"
+    verification_mode: str = "manual_confirm"
+    expected_window_title: Optional[str] = None
+    expected_app_name: Optional[str] = None
+    expected_session_label: Optional[str] = None
+    expected_project_path: Optional[str] = None
+    expected_pane_label: Optional[str] = None
+    expected_pane_index: Optional[int] = None
 
 
 class AppTargetUpdateRequest(BaseModel):
@@ -620,6 +640,32 @@ class AppTargetUpdateRequest(BaseModel):
     pane_label: Optional[str] = None
     pane_index: Optional[int] = None
     confirm_before_inject: Optional[bool] = None
+    target_kind: Optional[str] = None
+    verification_mode: Optional[str] = None
+    expected_window_title: Optional[str] = None
+    expected_app_name: Optional[str] = None
+    expected_session_label: Optional[str] = None
+    expected_project_path: Optional[str] = None
+    expected_pane_label: Optional[str] = None
+    expected_pane_index: Optional[int] = None
+
+
+class ActiveWindowResponse(BaseModel):
+    title: Optional[str] = None
+    app_name: Optional[str] = None
+    process_name: Optional[str] = None
+    pid: Optional[int] = None
+    platform: str
+    available: bool
+    reason: Optional[str] = None
+
+
+class VerificationResultResponse(BaseModel):
+    status: str
+    message: str
+    window: Optional[ActiveWindowResponse] = None
+    matched: Optional[bool] = None
+    summary: str = ""
 
 
 class PromptQueueResponse(BaseModel):
@@ -676,7 +722,33 @@ class ReorderRequest(BaseModel):
 
 
 class InjectRequest(BaseModel):
-    restore_clipboard: bool = False
+    user_confirmed: bool = False
+    allow_target_mismatch: bool = False
+    restore_clipboard_after: bool = False
+    dry_run: bool = False
+
+
+class InjectionSafetySummaryResponse(BaseModel):
+    target_id: int
+    target_name: str
+    target_status: str
+    target_kind: str
+    verification_mode: str
+    submit_mode: str
+    expected_app_name: Optional[str] = None
+    expected_window_title: Optional[str] = None
+    expected_session_label: Optional[str] = None
+    expected_project_path: Optional[str] = None
+    expected_pane_label: Optional[str] = None
+    expected_pane_index: Optional[int] = None
+    active_window: Optional[ActiveWindowResponse] = None
+    active_window_summary: str
+    verification_status: str
+    verification_message: str
+    matched: Optional[bool] = None
+    mismatch: bool
+    requires_confirmation: bool
+    warnings: List[str] = []
 
 
 class QueueSummaryResponse(BaseModel):
@@ -700,6 +772,8 @@ class InjectResultResponse(BaseModel):
 
 class InjectOutcomeResponse(BaseModel):
     summary: QueueSummaryResponse
-    prompt: QueuedPromptResponse
+    prompt: Optional[QueuedPromptResponse] = None
     injection: InjectResultResponse
     target_summary: str
+    safety: InjectionSafetySummaryResponse
+    dry_run: bool = False

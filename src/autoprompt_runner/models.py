@@ -322,6 +322,19 @@ class AppTarget:
     created_at: str
     updated_at: str
     last_used_at: Optional[str] = None
+    # Verification / multi-pane binding (added in the target-verification step).
+    target_kind: str = "active_window"
+    target_fingerprint: Optional[str] = None
+    expected_window_title: Optional[str] = None
+    expected_app_name: Optional[str] = None
+    expected_session_label: Optional[str] = None
+    expected_project_path: Optional[str] = None
+    expected_pane_label: Optional[str] = None
+    expected_pane_index: Optional[int] = None
+    verification_mode: str = "manual_confirm"
+    last_verified_at: Optional[str] = None
+    last_verification_status: Optional[str] = None
+    last_verification_message: Optional[str] = None
 
 
 @dataclass

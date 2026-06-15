@@ -14,7 +14,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from autoprompt_runner import app_injection, app_targets, prompt_queue, storage  # noqa: E402
+from autoprompt_runner import app_injection, app_targets, prompt_queue, storage, window_detection  # noqa: E402
 
 
 def _stub_injector(prompt, submit_mode="paste_only", restore_clipboard_after=False):
@@ -38,8 +38,9 @@ class PromptQueueTestCase(unittest.TestCase):
     def _add(self, title, body="body"):
         return prompt_queue.add_prompt_to_queue(self.db, self.queue.id, prompt=f"{body} {title}", title=title)
 
-    def _inject(self):
-        return prompt_queue.inject_current_prompt(self.db, self.queue.id, injector=_stub_injector)
+    def _inject(self, **kwargs):
+        kwargs.setdefault("user_confirmed", True)
+        return prompt_queue.inject_current_prompt(self.db, self.queue.id, injector=_stub_injector, **kwargs)
 
 
 class CreateAddTests(PromptQueueTestCase):
@@ -178,6 +179,73 @@ class PauseCancelTests(PromptQueueTestCase):
         with self.assertRaises(prompt_queue.PromptQueueError) as ctx:
             self._inject()
         self.assertEqual(ctx.exception.kind, "invalid_state")
+
+
+class VerificationInjectionTests(PromptQueueTestCase):
+    def test_manual_confirmation_required(self):
+        self._add("Prompt#34")
+        with self.assertRaises(prompt_queue.PromptQueueError) as ctx:
+            prompt_queue.inject_current_prompt(self.db, self.queue.id, injector=_stub_injector)  # no user_confirmed
+        self.assertEqual(ctx.exception.kind, "not_confirmed")
+
+    def test_dry_run_does_not_change_state_or_inject(self):
+        self._add("Prompt#34")
+        calls = []
+        out = prompt_queue.inject_current_prompt(
+            self.db, self.queue.id, dry_run=True, injector=lambda *a, **k: calls.append(1),
+        )
+        self.assertTrue(out.dry_run)
+        self.assertEqual(calls, [])  # the injector was never called
+        self.assertEqual(storage.get_current_prompt(self.db, self.queue.id).status, "PENDING")
+        self.assertIsNotNone(out.safety)
+
+    def test_active_window_unavailable_still_allows_manual_confirm(self):
+        # manual_confirm target: verification never reads the OS; manual confirmation injects fine.
+        self._add("Prompt#34")
+        out = self._inject(user_confirmed=True)
+        self.assertEqual(out.prompt.status, "WAITING_COMPLETION")
+        self.assertEqual(out.safety.verification_status, "manual_required")
+
+
+class HintVerificationTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self._tmp.name, "autoprompt.db")
+        storage.init_db(self.db)
+        self.target = app_targets.create_target(
+            self.db, name="FC", verification_mode="window_title_hint", expected_window_title="ExpectedXYZ",
+        )
+        self.queue = prompt_queue.create_queue(self.db, name="q", app_target_id=self.target.id)
+        prompt_queue.add_prompt_to_queue(self.db, self.queue.id, prompt="do it", title="P")
+        self._orig = window_detection.get_active_window_info
+
+    def tearDown(self):
+        window_detection.get_active_window_info = self._orig
+        self._tmp.cleanup()
+
+    def _set_active_title(self, title):
+        window_detection.get_active_window_info = lambda: window_detection.WindowInfo(
+            title=title, app_name="x", process_name="x", pid=1, platform="win32", available=True,
+        )
+
+    def test_window_title_mismatch_rejects_injection(self):
+        self._set_active_title("SomethingElse")
+        with self.assertRaises(prompt_queue.PromptQueueError) as ctx:
+            prompt_queue.inject_current_prompt(self.db, self.queue.id, user_confirmed=True, injector=_stub_injector)
+        self.assertEqual(ctx.exception.kind, "mismatch")
+
+    def test_mismatch_override_allows_injection(self):
+        self._set_active_title("SomethingElse")
+        out = prompt_queue.inject_current_prompt(
+            self.db, self.queue.id, user_confirmed=True, allow_target_mismatch=True, injector=_stub_injector,
+        )
+        self.assertEqual(out.prompt.status, "WAITING_COMPLETION")
+
+    def test_matching_window_verifies(self):
+        self._set_active_title("my ExpectedXYZ session")
+        out = prompt_queue.inject_current_prompt(self.db, self.queue.id, user_confirmed=True, injector=_stub_injector)
+        self.assertEqual(out.prompt.status, "WAITING_COMPLETION")
+        self.assertEqual(storage.get_app_target(self.db, self.target.id).last_verification_status, "verified")
 
 
 if __name__ == "__main__":

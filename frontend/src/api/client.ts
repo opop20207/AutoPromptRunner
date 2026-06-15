@@ -4,6 +4,7 @@
 // time with the VITE_API_BASE_URL environment variable.
 
 import type {
+  ActiveWindow,
   AppTarget,
   AppTargetCreate,
   ArtifactDetail,
@@ -11,6 +12,7 @@ import type {
   Health,
   InjectOutcome,
   PromptQueue,
+  VerificationResult,
   QueuedPrompt,
   QueueSummary,
   Project,
@@ -308,6 +310,8 @@ export const api = {
   enableAppTarget: (id: number) => request<AppTarget>(`/app-targets/${id}/enable`, { method: "POST" }),
   disableAppTarget: (id: number) => request<AppTarget>(`/app-targets/${id}/disable`, { method: "POST" }),
   deleteAppTarget: (id: number) => request<{ deleted: number }>(`/app-targets/${id}`, { method: "DELETE" }),
+  verifyAppTarget: (id: number) => request<VerificationResult>(`/app-targets/${id}/verify`, { method: "POST" }),
+  getActiveWindow: () => request<ActiveWindow>("/app-targets/active-window"),
 
   listPromptQueues: () => request<PromptQueue[]>("/prompt-queues"),
   createPromptQueue: (body: { name: string; app_target_id?: number | null; description?: string | null }) =>
@@ -324,10 +328,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ new_position: newPosition }),
     }),
-  injectCurrentPrompt: (queueId: number, restoreClipboard = false) =>
+  injectCurrentPrompt: (
+    queueId: number,
+    opts: {
+      user_confirmed?: boolean;
+      allow_target_mismatch?: boolean;
+      restore_clipboard_after?: boolean;
+      dry_run?: boolean;
+    } = {},
+  ) =>
     request<InjectOutcome>(`/prompt-queues/${queueId}/inject-current`, {
       method: "POST",
-      body: JSON.stringify({ restore_clipboard: restoreClipboard }),
+      body: JSON.stringify(opts),
     }),
   completeCurrentPrompt: (queueId: number) =>
     request<QueueSummary>(`/prompt-queues/${queueId}/complete-current`, { method: "POST" }),

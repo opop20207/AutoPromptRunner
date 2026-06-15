@@ -34,7 +34,7 @@ import os
 import sys
 from typing import Optional, Sequence
 
-from . import __version__, app_injection, app_targets, auth, cancel, chains, checkpoints, commits, compare, export_import, locks, paths, prompt_queue, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, worker, worktrees
+from . import __version__, app_injection, app_targets, auth, cancel, chains, checkpoints, commits, compare, export_import, locks, paths, prompt_queue, providers, queue, reconcile, recovery, safety, search, settings, storage, templates, window_detection, worker, worktrees
 from .artifacts import ArtifactType
 from .models import StepExecutionReport
 from .services.run_service import (
@@ -618,6 +618,16 @@ def _add_app_target_commands(subparsers: argparse._SubParsersAction) -> None:
                        choices=app_targets.TARGET_MODES, help="Targeting mode (default: active_window_manual).")
     add_p.add_argument("--submit-mode", dest="submit_mode", default=app_targets.SUBMIT_MODE_PASTE_ONLY,
                        choices=app_targets.SUBMIT_MODES, help="Submit behavior (default: paste_only).")
+    add_p.add_argument("--target-kind", dest="target_kind", default=app_targets.TARGET_KIND_ACTIVE_WINDOW,
+                       choices=app_targets.TARGET_KINDS, help="Target kind (default: active_window).")
+    add_p.add_argument("--verification-mode", dest="verification_mode", default=app_targets.VERIFICATION_MANUAL_CONFIRM,
+                       choices=app_targets.VERIFICATION_MODES, help="Verification mode (default: manual_confirm).")
+    add_p.add_argument("--expected-window-title", dest="expected_window_title", default=None, help="Expected window title (verification).")
+    add_p.add_argument("--expected-app-name", dest="expected_app_name", default=None, help="Expected app/process name (verification).")
+    add_p.add_argument("--expected-session-label", dest="expected_session_label", default=None, help="Expected session label.")
+    add_p.add_argument("--expected-project-path", dest="expected_project_path", default=None, help="Expected project path.")
+    add_p.add_argument("--expected-pane-label", dest="expected_pane_label", default=None, help="Expected pane label.")
+    add_p.add_argument("--expected-pane-index", dest="expected_pane_index", type=int, default=None, help="Expected pane index.")
     add_p.add_argument("--no-confirm", dest="confirm_before_inject", action="store_false",
                        help="Do not require per-injection confirmation for this target.")
     _add_db_path(add_p)
@@ -625,10 +635,13 @@ def _add_app_target_commands(subparsers: argparse._SubParsersAction) -> None:
     list_p = sub.add_parser("list", help="List app targets.")
     _add_db_path(list_p)
 
-    for name in ("show", "enable", "disable"):
+    for name in ("show", "enable", "disable", "verify"):
         p = sub.add_parser(name, help=f"{name.capitalize()} an app target by name.")
         p.add_argument("--name", required=True, help="Target name.")
         _add_db_path(p)
+
+    check_p = sub.add_parser("check-active-window", help="Print best-effort active window info.")
+    _add_db_path(check_p)
 
 
 def _add_prompt_queue_commands(subparsers: argparse._SubParsersAction) -> None:
@@ -656,8 +669,12 @@ def _add_prompt_queue_commands(subparsers: argparse._SubParsersAction) -> None:
     inject_p = sub.add_parser("inject-current", help="Inject the current prompt into the app target.")
     inject_p.add_argument("--queue-id", dest="queue_id", type=int, required=True, help="Queue id.")
     inject_p.add_argument("--yes", action="store_true", help="Skip the interactive confirmation.")
-    inject_p.add_argument("--restore-clipboard", dest="restore_clipboard", action="store_true",
-                          help="Restore the previous clipboard after a successful paste.")
+    inject_p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                          help="Show the safety summary and prompt preview without injecting.")
+    inject_p.add_argument("--allow-target-mismatch", dest="allow_target_mismatch", action="store_true",
+                          help="Inject even if the active window does not match the target.")
+    inject_p.add_argument("--restore-clipboard-after", "--restore-clipboard", dest="restore_clipboard_after",
+                          action="store_true", help="Restore the previous clipboard after a successful paste.")
     _add_db_path(inject_p)
 
     for name, helptext in (
@@ -2020,11 +2037,42 @@ def cmd_app_target_add(args: argparse.Namespace) -> int:
             submit_mode=args.submit_mode, window_title_hint=args.window_title_hint,
             session_label=args.session_label, project_path=args.project_path, worktree_path=args.worktree_path,
             pane_label=args.pane_label, pane_index=args.pane_index, confirm_before_inject=args.confirm_before_inject,
+            target_kind=args.target_kind, verification_mode=args.verification_mode,
+            expected_window_title=args.expected_window_title, expected_app_name=args.expected_app_name,
+            expected_session_label=args.expected_session_label, expected_project_path=args.expected_project_path,
+            expected_pane_label=args.expected_pane_label, expected_pane_index=args.expected_pane_index,
         )
     except app_targets.AppTargetError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return _app_target_exit(exc.kind)
     print(f"Created app target #{target.id}: {app_targets.target_summary(target)}")
+    print(f"  kind={target.target_kind}  verification={target.verification_mode}  fingerprint={target.target_fingerprint}")
+    return EXIT_OK
+
+
+def cmd_app_target_verify(args: argparse.Namespace) -> int:
+    db_path = storage.init_db(args.db_path)
+    target = app_targets.get_target_by_name(db_path, args.name)
+    if target is None:
+        print(f"error: app target '{args.name}' not found", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    result = app_targets.verify_app_target(db_path, target.id)
+    print(f"Verification of '{target.name}': {result.status}")
+    print(f"  {result.message}")
+    print(f"  active window: {window_detection.safe_window_summary(result.window)}")
+    if result.status == app_targets.VERIFY_MISMATCH:
+        print("  warning: active window does NOT match this target — focus the correct session before injecting.")
+    return EXIT_OK
+
+
+def cmd_app_target_check_active_window(args: argparse.Namespace) -> int:
+    storage.init_db(args.db_path)
+    info = window_detection.get_active_window_info()
+    if not info.available:
+        print(f"Active window: unavailable ({info.reason})")
+        return EXIT_OK
+    print(f"Active window: {window_detection.safe_window_summary(info)}")
+    print(f"  platform: {info.platform}")
     return EXIT_OK
 
 
@@ -2057,9 +2105,16 @@ def cmd_app_target_show(args: argparse.Namespace) -> int:
     print(f"  project:     {paths.safe_display_path(target.project_path) if target.project_path else '-'}")
     print(f"  worktree:    {paths.safe_display_path(target.worktree_path) if target.worktree_path else '-'}")
     print(f"  mode:        {target.target_mode}")
+    print(f"  kind:        {target.target_kind}")
     print(f"  submit:      {target.submit_mode}")
+    print(f"  verify mode: {target.verification_mode}")
+    print(f"  fingerprint: {target.target_fingerprint or '-'}")
+    print(f"  expected:    app={target.expected_app_name or '-'} | title={target.expected_window_title or '-'} | "
+          f"session={target.expected_session_label or '-'} | pane={target.expected_pane_label or '-'}"
+          f"{('#' + str(target.expected_pane_index)) if target.expected_pane_index is not None else ''}")
     print(f"  confirm:     {target.confirm_before_inject}")
     print(f"  status:      {target.status}")
+    print(f"  last verify: {target.last_verification_status or '-'} ({target.last_verified_at or 'never'})")
     print(f"  last used:   {target.last_used_at or '-'}")
     return EXIT_OK
 
@@ -2082,10 +2137,15 @@ def _dispatch_app_target(args: argparse.Namespace) -> int:
         "show": cmd_app_target_show,
         "enable": lambda a: _set_app_target_status_by_name(a, True),
         "disable": lambda a: _set_app_target_status_by_name(a, False),
+        "verify": cmd_app_target_verify,
+        "check-active-window": cmd_app_target_check_active_window,
     }
     handler = handlers.get(getattr(args, "app_target_command", None))
     if handler is None:
-        print("error: app-target requires a subcommand: add, list, show, enable, disable", file=sys.stderr)
+        print(
+            "error: app-target requires a subcommand: add, list, show, enable, disable, verify, check-active-window",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     return handler(args)
 
@@ -2096,9 +2156,9 @@ def _dispatch_app_target(args: argparse.Namespace) -> int:
 def _prompt_queue_exit(kind: str) -> int:
     if kind == "not_found":
         return EXIT_NOT_FOUND
-    if kind == "invalid":
+    if kind in ("invalid", "not_confirmed"):
         return EXIT_USAGE
-    return EXIT_RUN_FAILED  # invalid_state
+    return EXIT_RUN_FAILED  # invalid_state / mismatch
 
 
 def _confirm(message: str, assume_yes: bool) -> bool:
@@ -2174,30 +2234,44 @@ def cmd_prompt_queue_show(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _print_injection_safety(safety) -> None:
+    print(f"Target: #{safety.target_id} {safety.target_name} [{safety.target_status}] (submit={safety.submit_mode})")
+    print(f"  expected session: {safety.expected_session_label or '-'}  | pane: {safety.expected_pane_label or '-'}"
+          f"{('#' + str(safety.expected_pane_index)) if safety.expected_pane_index is not None else ''}")
+    print(f"  active window:    {safety.active_window_summary}")
+    print(f"  verification:     {safety.verification_status} ({safety.verification_message})")
+    for warning in safety.warnings:
+        print(f"  warning: {warning}")
+
+
 def cmd_prompt_queue_inject_current(args: argparse.Namespace) -> int:
     db_path = storage.init_db(args.db_path)
+    # Always build the safety preview first (a dry-run; touches nothing).
     try:
-        summary = prompt_queue.build_queue_summary(db_path, args.queue_id)
+        preview_outcome = prompt_queue.inject_current_prompt(db_path, args.queue_id, dry_run=True)
     except prompt_queue.PromptQueueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return _prompt_queue_exit(exc.kind)
-    if summary.target is None:
-        print("error: queue has no app target bound", file=sys.stderr)
-        return EXIT_RUN_FAILED
-    print(f"Target: {app_targets.target_summary(summary.target)}")
-    if summary.current is not None:
-        print(f"Prompt: {summary.current.title or '(untitled)'}  [{summary.current.status}]")
-        print(f"  preview: {prompt_queue.preview(summary.current.prompt)}")
+    _print_injection_safety(preview_outcome.safety)
+    if preview_outcome.prompt is not None:
+        print(f"Prompt: {preview_outcome.prompt.title or '(untitled)'}  [{preview_outcome.prompt.status}]")
+        print(f"  preview: {prompt_queue.preview(preview_outcome.prompt.prompt)}")
+    if args.dry_run:
+        print("Dry run: nothing was injected.")
+        return EXIT_OK
     print("MANUAL STEP: focus the correct Claude Code input in the app, then confirm.")
     if not _confirm("Inject this prompt into the active window?", args.yes):
         print("Aborted (no injection).")
         return EXIT_OK
     try:
         outcome = prompt_queue.inject_current_prompt(
-            db_path, args.queue_id, restore_clipboard_after=args.restore_clipboard
+            db_path, args.queue_id, user_confirmed=True, allow_target_mismatch=args.allow_target_mismatch,
+            restore_clipboard_after=args.restore_clipboard_after,
         )
     except prompt_queue.PromptQueueError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if exc.kind == "mismatch":
+            print("       pass --allow-target-mismatch to inject anyway.", file=sys.stderr)
         return _prompt_queue_exit(exc.kind)
     except app_injection.InjectionError as exc:
         print(f"error: injection failed: {exc}", file=sys.stderr)

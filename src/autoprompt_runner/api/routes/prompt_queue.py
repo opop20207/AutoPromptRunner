@@ -29,7 +29,7 @@ from ..schemas import (
 
 router = APIRouter(prefix="/prompt-queues", tags=["prompt-queues"])
 
-_STATUS = {"not_found": 404, "invalid": 400, "invalid_state": 409}
+_STATUS = {"not_found": 404, "invalid": 400, "invalid_state": 409, "not_confirmed": 400, "mismatch": 409}
 _INJECTION_STATUS = {"empty": 400, "disabled": 409, "not_found": 404, "clipboard": 409}
 
 
@@ -125,7 +125,9 @@ def inject_current(
 ) -> InjectOutcomeResponse:
     try:
         outcome = prompt_queue.inject_current_prompt(
-            db_path, queue_id, restore_clipboard_after=body.restore_clipboard
+            db_path, queue_id, user_confirmed=body.user_confirmed,
+            allow_target_mismatch=body.allow_target_mismatch,
+            restore_clipboard_after=body.restore_clipboard_after, dry_run=body.dry_run,
         )
     except prompt_queue.PromptQueueError as exc:
         raise _http(exc)

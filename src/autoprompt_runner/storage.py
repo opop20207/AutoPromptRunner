@@ -359,7 +359,19 @@ CREATE TABLE IF NOT EXISTS app_targets (
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    last_used_at TEXT
+    last_used_at TEXT,
+    target_kind TEXT,
+    target_fingerprint TEXT,
+    expected_window_title TEXT,
+    expected_app_name TEXT,
+    expected_session_label TEXT,
+    expected_project_path TEXT,
+    expected_pane_label TEXT,
+    expected_pane_index INTEGER,
+    verification_mode TEXT,
+    last_verified_at TEXT,
+    last_verification_status TEXT,
+    last_verification_message TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_app_targets_name ON app_targets (name);
@@ -412,6 +424,22 @@ _PROJECTS_MIGRATIONS = (
     ("require_approval", "ALTER TABLE projects ADD COLUMN require_approval INTEGER"),
     ("timeout_seconds", "ALTER TABLE projects ADD COLUMN timeout_seconds INTEGER"),
     ("updated_at", "ALTER TABLE projects ADD COLUMN updated_at TEXT"),
+)
+# App-target verification columns (added after the app_targets table; applied idempotently
+# for databases created before the target-verification step).
+_APP_TARGETS_MIGRATIONS = (
+    ("target_kind", "ALTER TABLE app_targets ADD COLUMN target_kind TEXT"),
+    ("target_fingerprint", "ALTER TABLE app_targets ADD COLUMN target_fingerprint TEXT"),
+    ("expected_window_title", "ALTER TABLE app_targets ADD COLUMN expected_window_title TEXT"),
+    ("expected_app_name", "ALTER TABLE app_targets ADD COLUMN expected_app_name TEXT"),
+    ("expected_session_label", "ALTER TABLE app_targets ADD COLUMN expected_session_label TEXT"),
+    ("expected_project_path", "ALTER TABLE app_targets ADD COLUMN expected_project_path TEXT"),
+    ("expected_pane_label", "ALTER TABLE app_targets ADD COLUMN expected_pane_label TEXT"),
+    ("expected_pane_index", "ALTER TABLE app_targets ADD COLUMN expected_pane_index INTEGER"),
+    ("verification_mode", "ALTER TABLE app_targets ADD COLUMN verification_mode TEXT"),
+    ("last_verified_at", "ALTER TABLE app_targets ADD COLUMN last_verified_at TEXT"),
+    ("last_verification_status", "ALTER TABLE app_targets ADD COLUMN last_verification_status TEXT"),
+    ("last_verification_message", "ALTER TABLE app_targets ADD COLUMN last_verification_message TEXT"),
 )
 
 
@@ -475,6 +503,7 @@ def init_db(db_path: Optional[str] = None) -> str:
         conn.executescript(SCHEMA)
         _migrate_table(conn, "runs", _RUNS_MIGRATIONS)
         _migrate_table(conn, "projects", _PROJECTS_MIGRATIONS)
+        _migrate_table(conn, "app_targets", _APP_TARGETS_MIGRATIONS)
         conn.commit()
     finally:
         conn.close()
@@ -2047,6 +2076,9 @@ def mark_commit_failed(db_path: str, commit_id: int, error: Optional[str] = None
 _APP_TARGET_FIELDS = (
     "name", "app_name", "window_title_hint", "session_label", "project_path", "worktree_path",
     "pane_label", "pane_index", "target_mode", "submit_mode", "confirm_before_inject", "status",
+    "target_kind", "target_fingerprint", "expected_window_title", "expected_app_name",
+    "expected_session_label", "expected_project_path", "expected_pane_label", "expected_pane_index",
+    "verification_mode",
 )
 
 
@@ -2065,6 +2097,15 @@ def create_app_target(
     pane_index: Optional[int] = None,
     confirm_before_inject: bool = True,
     status: str = APP_TARGET_ACTIVE,
+    target_kind: str = "active_window",
+    target_fingerprint: Optional[str] = None,
+    expected_window_title: Optional[str] = None,
+    expected_app_name: Optional[str] = None,
+    expected_session_label: Optional[str] = None,
+    expected_project_path: Optional[str] = None,
+    expected_pane_label: Optional[str] = None,
+    expected_pane_index: Optional[int] = None,
+    verification_mode: str = "manual_confirm",
 ) -> int:
     """Insert an app target and return its id. ``name`` is unique."""
     db = _resolve_db_path(db_path)
@@ -2074,12 +2115,32 @@ def create_app_target(
         cur = conn.execute(
             "INSERT INTO app_targets (name, app_name, window_title_hint, session_label, project_path, "
             "worktree_path, pane_label, pane_index, target_mode, submit_mode, confirm_before_inject, "
-            "status, created_at, updated_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "status, created_at, updated_at, last_used_at, target_kind, target_fingerprint, "
+            "expected_window_title, expected_app_name, expected_session_label, expected_project_path, "
+            "expected_pane_label, expected_pane_index, verification_mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name, app_name, window_title_hint, session_label, project_path, worktree_path, pane_label,
-             pane_index, target_mode, submit_mode, 1 if confirm_before_inject else 0, status, now, now, None),
+             pane_index, target_mode, submit_mode, 1 if confirm_before_inject else 0, status, now, now, None,
+             target_kind, target_fingerprint, expected_window_title, expected_app_name, expected_session_label,
+             expected_project_path, expected_pane_label, expected_pane_index, verification_mode),
         )
         conn.commit()
         return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def mark_app_target_verified(db_path: str, target_id: int, status: str, message: Optional[str] = None) -> None:
+    """Record the result of a target verification (last_verified_at / status / message)."""
+    db = _resolve_db_path(db_path)
+    conn = _connect(db)
+    try:
+        conn.execute(
+            "UPDATE app_targets SET last_verified_at = ?, last_verification_status = ?, "
+            "last_verification_message = ?, updated_at = ? WHERE id = ?",
+            (_utcnow_iso(), status, message, _utcnow_iso(), target_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -3246,6 +3307,18 @@ def _row_to_app_target(row: sqlite3.Row) -> AppTarget:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         last_used_at=_opt(row, "last_used_at"),
+        target_kind=_opt(row, "target_kind") or "active_window",
+        target_fingerprint=_opt(row, "target_fingerprint"),
+        expected_window_title=_opt(row, "expected_window_title"),
+        expected_app_name=_opt(row, "expected_app_name"),
+        expected_session_label=_opt(row, "expected_session_label"),
+        expected_project_path=_opt(row, "expected_project_path"),
+        expected_pane_label=_opt(row, "expected_pane_label"),
+        expected_pane_index=_opt(row, "expected_pane_index"),
+        verification_mode=_opt(row, "verification_mode") or "manual_confirm",
+        last_verified_at=_opt(row, "last_verified_at"),
+        last_verification_status=_opt(row, "last_verification_status"),
+        last_verification_message=_opt(row, "last_verification_message"),
     )
 
 

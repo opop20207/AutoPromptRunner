@@ -163,6 +163,17 @@ button.danger:hover:not(:disabled) {
   margin: 8px 0;
 }
 
+.injection-panel .kv,
+.commit-card .kv {
+  margin: 6px 0;
+}
+
+/* App-target verification: keep the verify result block readable inside a card. */
+.injection-panel .commit-diffstat {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .form label.checkbox {
   flex-direction: row;
   align-items: center;

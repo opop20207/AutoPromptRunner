@@ -661,6 +661,8 @@ export interface CommitResult {
 
 export const TARGET_MODES = ["active_window_manual", "window_title_hint", "future_accessibility"] as const;
 export const SUBMIT_MODES = ["paste_only", "paste_and_enter", "paste_and_ctrl_enter"] as const;
+export const TARGET_KINDS = ["active_window", "window_title", "manual_session", "manual_pane"] as const;
+export const VERIFICATION_MODES = ["manual_confirm", "window_title_hint", "app_name_hint", "none"] as const;
 export type AppTargetStatus = "ACTIVE" | "DISABLED";
 
 export interface AppTarget {
@@ -680,6 +682,18 @@ export interface AppTarget {
   created_at: string;
   updated_at: string;
   last_used_at?: string | null;
+  target_kind: string;
+  target_fingerprint?: string | null;
+  expected_window_title?: string | null;
+  expected_app_name?: string | null;
+  expected_session_label?: string | null;
+  expected_project_path?: string | null;
+  expected_pane_label?: string | null;
+  expected_pane_index?: number | null;
+  verification_mode: string;
+  last_verified_at?: string | null;
+  last_verification_status?: string | null;
+  last_verification_message?: string | null;
 }
 
 export interface AppTargetCreate {
@@ -694,6 +708,55 @@ export interface AppTargetCreate {
   pane_label?: string | null;
   pane_index?: number | null;
   confirm_before_inject?: boolean;
+  target_kind?: string;
+  verification_mode?: string;
+  expected_window_title?: string | null;
+  expected_app_name?: string | null;
+  expected_session_label?: string | null;
+  expected_project_path?: string | null;
+  expected_pane_label?: string | null;
+  expected_pane_index?: number | null;
+}
+
+export interface ActiveWindow {
+  title?: string | null;
+  app_name?: string | null;
+  process_name?: string | null;
+  pid?: number | null;
+  platform: string;
+  available: boolean;
+  reason?: string | null;
+}
+
+export interface VerificationResult {
+  status: string;
+  message: string;
+  window?: ActiveWindow | null;
+  matched?: boolean | null;
+  summary: string;
+}
+
+export interface InjectionSafetySummary {
+  target_id: number;
+  target_name: string;
+  target_status: string;
+  target_kind: string;
+  verification_mode: string;
+  submit_mode: string;
+  expected_app_name?: string | null;
+  expected_window_title?: string | null;
+  expected_session_label?: string | null;
+  expected_project_path?: string | null;
+  expected_pane_label?: string | null;
+  expected_pane_index?: number | null;
+  active_window?: ActiveWindow | null;
+  active_window_summary: string;
+  verification_status: string;
+  verification_message: string;
+  matched?: boolean | null;
+  mismatch: boolean;
+  requires_confirmation: boolean;
+  warnings: string[];
 }
 
 export type PromptQueueStatus =
@@ -755,7 +818,9 @@ export interface InjectResult {
 
 export interface InjectOutcome {
   summary: QueueSummary;
-  prompt: QueuedPrompt;
+  prompt?: QueuedPrompt | null;
   injection: InjectResult;
   target_summary: string;
+  safety: InjectionSafetySummary;
+  dry_run: boolean;
 }

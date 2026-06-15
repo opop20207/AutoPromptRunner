@@ -951,6 +951,27 @@ class AppQueueCliTests(unittest.TestCase):
         code, out, err = run_cli(["prompt-queue", "inject-current", "--queue-id", "1", "--db-path", self.db])
         self.assertIn("--yes", (out + err))
 
+    def test_app_target_verify(self):
+        run_cli(["app-target", "add", "--name", "FC", "--verification-mode", "manual_confirm", "--db-path", self.db])
+        code, out, err = run_cli(["app-target", "verify", "--name", "FC", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("manual_required", out)
+
+    def test_app_target_check_active_window(self):
+        code, out, err = run_cli(["app-target", "check-active-window", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Active window", out)
+
+    def test_prompt_queue_inject_dry_run(self):
+        run_cli(["app-target", "add", "--name", "FC", "--db-path", self.db])
+        run_cli(["prompt-queue", "create", "--name", "q", "--target", "FC", "--db-path", self.db])
+        run_cli(["prompt-queue", "add", "--queue-id", "1", "--title", "P34", "--prompt", "do it", "--db-path", self.db])
+        code, out, err = run_cli(["prompt-queue", "inject-current", "--queue-id", "1", "--dry-run", "--db-path", self.db])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Dry run", out)
+        # The prompt was not injected (still PENDING).
+        self.assertEqual(storage.get_current_prompt(self.db, 1).status, "PENDING")
+
 
 class ConfigCliTests(unittest.TestCase):
     def setUp(self):
